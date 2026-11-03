@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }}, extras: ${{ matrix.extras }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: "3.10", extras: "dev" }
+          - { python: "3.12", extras: "dev" }
+          - { python: "3.13", extras: "dev,agents" }
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: System libraries for Qt (offscreen)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0
+      - name: Install
+        run: python -m pip install -e ".[${{ matrix.extras }}]"
+      - name: Lint
+        run: python -m pyflakes src tests scripts
+      - name: Tests
+        run: python -m unittest discover -s tests -t . -v
+
+  package:
+    name: Build and install the wheel
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System libraries for Qt (offscreen)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - name: Build the wheel
+        run: python -m pip wheel . --no-deps -w dist
+      - name: Wheel contents
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          for required in ("nina/assets/nina.png", "nina/locales/pt_BR.py", "nina/agents/store.py", "nina/hook.py"):
+              assert required in names, f"missing from the wheel: {required}"
+          print(len(names), "files; all required files present")
+          PY
+      - name: Install in a clean environment and run the commands
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install -q dist/*.whl
+          /tmp/clean/bin/nina --version
+          /tmp/clean/bin/nina --help
+          echo '{"hook_event_name":"Stop","session_id":"ci"}' | /tmp/clean/bin/nina-hook
+          test "$(echo '{}' | /tmp/clean/bin/python -m nina.hook | wc -c)" = "0"
