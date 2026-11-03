@@ -1,0 +1,16 @@
+{
+  "language": "en",
+  "default_dir": "~/projects",
+  "account": "",
+  "profiles": {
+    "work": {
+      "default_dir": "~/work/main-project",
+      "add_dirs": ["~/work"],
+      "context_file": "~/.config/nina/profiles/work.md",
+      "permissions_file": "~/.config/nina/profiles/work.settings.json"
+    }
+  },
+  "terminal": "",
+  "sleep_minutes": 10,
+  "claude_bin": ""
+}

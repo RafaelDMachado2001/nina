@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nina-mascot"
+version = "0.1.0"
+description = "A tiny pixel-art desktop mascot that makes your AI coding agents visible and controllable."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Rafael Machado" }]
+keywords = ["claude-code", "mascot", "desktop", "pyside6", "agents", "hooks"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+]
+dependencies = ["PySide6>=6.6"]
+
+[project.optional-dependencies]
+# Managed agents (launch and talk to agents from the panel). Bundles the Claude Code CLI (~300 MB).
+agents = ["claude-agent-sdk>=0.2.177"]
+dev = ["pyflakes"]
+docs = ["pillow>=10"]     # only to regenerate the screenshots/GIFs (scripts/make_screenshots.py)
+
+[project.scripts]
+nina = "nina.app:main"
+nina-hook = "nina.hook:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nina = ["assets/*.png"]

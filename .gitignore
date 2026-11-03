@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Local state and secrets: never commit
+*.db
+*.db-wal
+*.db-shm
+*.log
+.env
+.env.*
+config.json
+plugins/
+roles/
+profiles/
+
+# Generated
+nina_frames.png
