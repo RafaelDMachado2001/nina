@@ -17,7 +17,12 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Software Development",
 ]
-dependencies = ["PySide6>=6.6"]
+dependencies = [
+    # PySide6 6.12.0 aborts with "none_dealloc: deallocating None" on Python 3.10 and 3.11 (a reference-count bug
+    # that Python 3.12+ is immune to because None is immortal), so it is excluded there.
+    "PySide6>=6.6,<6.12; python_version < '3.12'",
+    "PySide6>=6.6; python_version >= '3.12'",
+]
 
 [project.optional-dependencies]
 # Managed agents (launch and talk to agents from the panel). Bundles the Claude Code CLI (~300 MB).

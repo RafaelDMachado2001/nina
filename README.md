@@ -179,6 +179,7 @@ context), it always exits 0, and it swallows every error, so it can never get in
 
 ## Known limitations
 
+- On Python 3.10 and 3.11 NINA needs PySide6 older than 6.12 (6.12.0 has a reference-count bug that aborts the process); the package metadata pins it, and NINA refuses to start with a bad combination instead of crashing later.
 - Linux/X11 only for now; behaviour on pure Wayland is limited by the compositor (that is why she runs through XWayland).
 - Observed sessions (started in your own terminals) are read-only in the panel; you can copy a `claude --resume` command. Only managed agents can be driven from NINA.
 - Managed agents are not resumed after NINA restarts.

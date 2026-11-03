@@ -172,6 +172,7 @@ sempre sai com 0 e engole qualquer erro, então nunca atrapalha o Claude Code, n
 
 ## Limitações conhecidas
 
+- No Python 3.10 e 3.11 a NINA precisa de um PySide6 anterior à 6.12 (a 6.12.0 tem um bug de contagem de referências que aborta o processo); os metadados do pacote já restringem isso, e a NINA se recusa a iniciar numa combinação ruim em vez de travar depois.
 - Só Linux/X11 por enquanto; em Wayland puro o comportamento é limitado pelo compositor (por isso ela roda via XWayland).
 - Sessões observadas (abertas nos seus próprios terminais) são somente leitura no painel; dá para copiar um comando `claude --resume`. Só agentes gerenciados podem ser conduzidos pela NINA.
 - Agentes gerenciados não são retomados depois que a NINA reinicia.

@@ -102,6 +102,13 @@ def main(argv: list | None = None) -> int:
             return 1
         return 0
 
+    if sys.version_info < (3, 12):
+        import PySide6
+        if tuple(int(x) for x in PySide6.__version__.split(".")[:2]) >= (6, 12):
+            print("NINA: PySide6 6.12 crashes on Python < 3.12 (reference-count bug). "
+                  "Install an older one: pip install 'PySide6<6.12'", file=sys.stderr)
+            return 1
+
     # On Ubuntu with Wayland, windows cannot position themselves or stay "always on top".
     # Running through XWayland (xcb) fixes that. Set QT_QPA_PLATFORM yourself to override.
     if sys.platform.startswith("linux"):
