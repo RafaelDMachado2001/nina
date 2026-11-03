@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: Tests (Python ${{ matrix.python }}, extras: ${{ matrix.extras }})
+    name: "Tests (Python ${{ matrix.python }}, extras ${{ matrix.extras }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
