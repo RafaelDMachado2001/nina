@@ -30,7 +30,9 @@ def _tool_detail(tool_input) -> str:
 
 
 def forward() -> None:
-    data = json.loads(sys.stdin.read() or "{}")
+    # pythonw.exe can start with no stdin object; fall back to the inherited handle.
+    raw = sys.stdin.read() if sys.stdin is not None else open(0, encoding="utf-8", errors="replace").read()
+    data = json.loads(raw or "{}")
     event = {
         "ev": data.get("hook_event_name"),
         "sid": data.get("session_id"),

@@ -16,8 +16,24 @@ HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", 
 HOOK_TOOL_EVENTS = {"PreToolUse", "PostToolUse"}
 
 
-def hook_command() -> str:
-    return f"{shlex.quote(sys.executable)} -m nina.hook"
+def hook_command(windows: bool | None = None, executable: str | None = None) -> str:
+    """The command Claude Code runs for every hook event.
+
+    On Windows it uses `pythonw.exe` (next to the running interpreter, when present) so no console window flashes
+    on each tool call. The path uses forward slashes and double quotes: it works in Git Bash, where Claude Code
+    runs hooks, and in cmd.exe, whereas shlex's single quotes only work in POSIX shells.
+    """
+    if windows is None:
+        windows = sys.platform == "win32"
+    exe = executable or sys.executable
+    if not windows:
+        return f"{shlex.quote(exe)} -m nina.hook"
+    exe = exe.replace("\\", "/")
+    head, _sep, tail = exe.rpartition("/")
+    if tail.lower() == "python.exe" and os.path.exists(f"{head}/pythonw.exe" if head else "pythonw.exe"):
+        tail = "pythonw.exe"
+    exe = f"{head}/{tail}" if head else tail
+    return f'"{exe}" -m nina.hook'
 
 
 def _is_nina_hook(handler) -> bool:
