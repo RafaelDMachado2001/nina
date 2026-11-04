@@ -49,6 +49,7 @@ Isso faz o merge dos hooks da NINA no `settings.json` da conta ativa: nunca sobr
 | Ação | Resultado |
 |---|---|
 | Clique | Abre o Claude Code na pasta padrão (enquanto ela espera, só dispensa o alerta) |
+| Duplo clique | Abre a janela de conversa ao lado dela (exige o extra `agents`; o clique simples espera um instante para distinguir os dois) |
 | Arrastar | Move a NINA (a posição fica salva) |
 | Botão direito | Painel de agentes, novo agente, abrir em outra pasta / com outra conta, tamanho, iniciar com o sistema, conectar ao Claude Code, cochilo, sair |
 
@@ -118,6 +119,17 @@ model: sonnet
 Você é um revisor... (o corpo é o prompt de sistema do papel)
 ```
 
+### Conversar com a NINA
+
+Dê um duplo clique nela (ou botão direito → **Conversar com a NINA...**, ou rode `nina chat`) e uma janela de conversa abre ao lado dela.
+Por trás há um agente gerenciado persistente (o papel **Assistente geral**, na sua pasta padrão e conta ativa): a conversa **continua entre execuções**,
+**Nova conversa** começa outra, e ela mostra os mesmos estados de qualquer agente (shuriken girando enquanto pensa, o alerta quando precisa de você).
+Leituras são pré-aprovadas; toda escrita ou comando pede **Permitir / Negar**. Use `"chat_role"` no `config.json` para outro papel.
+
+Para um **atalho global** no GNOME rode `nina --install-shortcut` (padrão `<Super>n`; `nina --uninstall-shortcut` remove). Ele registra um atalho
+personalizado que executa `nina chat`; quem captura as teclas é o desktop, então funciona também no Wayland. Se a NINA roda com outro usuário que o da sessão
+gráfica, passe o comando que a alcança: `--command "sudo -n env XDG_RUNTIME_DIR=/run/user/0 /caminho/nina chat"`.
+
 ### Contas e perfis
 
 A NINA entende o layout multi-conta comum (uma pasta de configuração do Claude por conta, em `~/.claude/accounts/<conta>`) e define o `CLAUDE_CONFIG_DIR`
@@ -151,6 +163,7 @@ Um plugin com defeito nunca derruba a NINA. Plugins rodam como você, então só
 | `terminal` | Força um terminal (`gnome-terminal`, `kitty`...); vazio = detecta |
 | `sleep_minutes` | Tempo ocioso até ela dormir |
 | `scale` | Tamanho: 3, 4 ou 6 |
+| `chat_role` | Papel do agente da conversa (padrão: Assistente geral) |
 | `claude_bin` | Caminho do `claude` para agentes gerenciados; vazio = detecta |
 | `plugins` | `false` desativa os plugins locais |
 

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from nina import __version__, config, i18n
+from nina.i18n import _
 from nina.sockpath import socket_paths
 
 USAGE = """\
@@ -15,6 +16,11 @@ Usage:
   nina happy [text]          make it celebrate
   nina show                  bring it to the front
   nina sleep                 send it to sleep
+  nina chat                  open (or close) the chat window
+  nina ask <text>            open the chat and send it a message
+  nina --install-shortcut [keys] [--command cmd]
+                             GNOME: global shortcut that runs `nina chat` (default <Super>n)
+  nina --uninstall-shortcut  remove that shortcut
   nina --install-hooks       connect NINA to Claude Code (merges hooks into settings.json)
   nina --uninstall-hooks     remove NINA's hooks
   nina --export [dir]        write the icon and a sheet with every frame
@@ -99,6 +105,25 @@ def main(argv: list | None = None) -> int:
             print(claude_hooks.install_hooks() if args[0] == "--install-hooks" else claude_hooks.uninstall_hooks())
         except (OSError, ValueError) as e:
             print(f"NINA: could not change {config.settings_path()}: {e}", file=sys.stderr)
+            return 1
+        return 0
+
+    if args and args[0] in ("--install-shortcut", "--uninstall-shortcut"):
+        from nina import shortcut
+        try:
+            if args[0] == "--uninstall-shortcut":
+                print(_("Shortcut removed.") if shortcut.uninstall() else _("There was no NINA shortcut."))
+            else:
+                rest = args[1:]
+                command = None
+                if "--command" in rest:
+                    i = rest.index("--command")
+                    command = rest[i + 1] if i + 1 < len(rest) else None
+                    rest = rest[:i] + rest[i + 2:]
+                print(_("Shortcut {keys} runs: {command}", keys=shortcut.install(rest[0] if rest else shortcut.DEFAULT_KEYS, command),
+                        command=command or shortcut.default_command()))
+        except RuntimeError as e:
+            print(f"NINA: {e}", file=sys.stderr)
             return 1
         return 0
 

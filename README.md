@@ -45,12 +45,13 @@ and `nina --uninstall-hooks` removes only NINA's entries. Start a new `claude` s
 | Action | Result |
 |---|---|
 | Click | Opens Claude Code in the default folder (while she is waiting, it only dismisses the alert) |
+| Double click | Opens the chat window beside her (needs the `agents` extra; a single click waits a moment to tell the two apart) |
 | Drag | Moves her (the position is remembered) |
 | Right click | Agents panel, new agent, open elsewhere / with another account, size, start with the system, connect to Claude Code, nap, quit |
 
 ![The right-click menu](docs/images/menu.png)
 
-She falls asleep after 10 idle minutes. From a terminal: `nina say "text"`, `nina happy`, `nina show`, `nina sleep` talk to the running instance.
+She falls asleep after 10 idle minutes. From a terminal: `nina say "text"`, `nina happy`, `nina show`, `nina sleep`, `nina chat`, `nina ask "text"` talk to the running instance.
 
 ### Mascot states
 
@@ -114,6 +115,18 @@ model: sonnet
 You are a reviewer... (the body is the role's system prompt)
 ```
 
+### Talk to NINA
+
+Double click her (or right click → **Talk to NINA...**, or run `nina chat`) and a small chat window opens beside her.
+Behind it is one persistent managed agent (the **General assistant** role, in your default folder and active account):
+the conversation **continues between runs**, **New chat** starts a fresh one, and she shows the same states as for any agent
+(a spinning shuriken while it thinks, the permission alert when it needs you). Reads are pre-approved; every write or command asks **Allow / Deny**.
+Set `"chat_role"` in `config.json` to use another role (for example your own `~/.config/nina/roles/<id>.md`).
+
+For a **global shortcut** on GNOME run `nina --install-shortcut` (default `<Super>n`; `nina --install-shortcut "<Ctrl><Alt>n"` for another one;
+`nina --uninstall-shortcut` removes it). It registers a custom keybinding that runs `nina chat`; the desktop grabs the keys, so it also works on Wayland.
+If NINA runs as a different user than your desktop session, pass the command that reaches her: `--command "sudo -n env XDG_RUNTIME_DIR=/run/user/0 /path/to/nina chat"`.
+
 ### Accounts and profiles
 
 NINA understands the common multi-account layout (one Claude config directory per account in `~/.claude/accounts/<account>`) and sets
@@ -148,6 +161,7 @@ A broken plugin never takes NINA down. Plugins run as you, so only put code you 
 | `sleep_minutes` | Idle time before she sleeps |
 | `scale` | Size: 3, 4 or 6 |
 | `claude_bin` | Path of `claude` for managed agents; empty = auto-detect |
+| `chat_role` | Role of the chat agent (default: the General assistant) |
 | `plugins` | `false` disables local plugins |
 
 Start with the system: right click → **Start with the system** (a freedesktop autostart entry).

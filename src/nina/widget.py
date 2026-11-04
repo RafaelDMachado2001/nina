@@ -21,9 +21,10 @@ except Exception:   # pragma: no cover
     AgentStore = None
 
 try:   # managed agents need the optional claude-agent-sdk
+    from nina import chat
     from nina.agents import managed, managed_view
 except Exception:   # pragma: no cover
-    managed = managed_view = None
+    chat = managed = managed_view = None
 
 WORK_TIMEOUT_S = 180   # no events for this long and "working" goes back to normal (e.g. you pressed Esc)
 
@@ -50,7 +51,10 @@ class Nina(QWidget):
         self.setWindowTitle(APP_NAME)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setToolTip(_("Click: open Claude Code\nRight click: options"))
+        self.chat_controller = None
+        self.chat_box = None
+        self.setToolTip(_("Click: open Claude Code\nDouble click: talk to NINA\nRight click: options")
+                        if self.managed_available() else _("Click: open Claude Code\nRight click: options"))
 
         self.t = 0
         self.blink_ticks = 0
@@ -71,6 +75,7 @@ class Nina(QWidget):
             except Exception as e:   # without the agents panel, everything else still works
                 print(f"NINA: agents panel unavailable: {e}", file=sys.stderr)
         self.last_activity = time.monotonic()
+        self.click_pending = False
         self.press_global = None
         self.press_window = None
         self.dragging = False
@@ -87,6 +92,8 @@ class Nina(QWidget):
     def shutdown(self) -> None:
         """Stop the animation and release the agent registry (called when the application quits)."""
         self.timer.stop()
+        if self.chat_controller is not None:
+            self.chat_controller.shutdown()
         if self.agents is not None:
             self.agents.close()
 
@@ -330,10 +337,24 @@ class Nina(QWidget):
             self.touch()
         elif self.mode() == "wait":
             self.dismiss_waiting()
+        elif self.managed_available():
+            # Wait for a possible second click: a double click opens the chat instead of the terminal.
+            QTimer.singleShot(QApplication.doubleClickInterval(), self.single_click)
+            self.click_pending = True
         else:
             self.launch(config.default_dir_of(self.cfg))
         self.press_global = None
         self.dragging = False
+
+    def single_click(self) -> None:
+        if self.click_pending:
+            self.click_pending = False
+            self.launch(config.default_dir_of(self.cfg))
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton and self.managed_available():
+            self.click_pending = False
+            self.toggle_chat()
 
     def enterEvent(self, _e) -> None:
         if self.sleeping:
@@ -407,6 +428,8 @@ class Nina(QWidget):
     def build_menu(self) -> QMenu:
         menu = QMenu(self)
 
+        if self.managed_available():
+            menu.addAction(_("Talk to NINA...")).triggered.connect(lambda: self.toggle_chat())
         if self.agents is not None:
             menu.addAction(_("Agents ({n} active)...", n=self.agents_active)).triggered.connect(self.show_agents)
             if self.managed_available():
@@ -604,6 +627,46 @@ class Nina(QWidget):
         QApplication.instance().aboutToQuit.connect(tab.shutdown)
         return tab
 
+    # ---- talking to NINA ----------------------------------------------------
+    def ensure_chat(self) -> bool:
+        if self.chat_box is not None:
+            return True
+        if not self.managed_available():
+            QMessageBox.information(self, APP_NAME, _("Talking to NINA needs managed agents: install the 'agents' extra."))
+            return False
+        ctrl = chat.ChatController(lambda: {**self.managed_context(), "chat_role": self.cfg.get("chat_role", "")}, parent=self)
+        ctrl.attention.connect(lambda text: self.say(text, 4))
+        ctrl.state_changed.connect(self.on_chat_state)
+        ctrl.message.connect(lambda *_a: self.on_chat_activity())
+        ctrl.finished.connect(self.celebrate)
+        self.chat_controller, self.chat_box = ctrl, chat.ChatBox(ctrl)
+        return True
+
+    def on_chat_state(self, state: str) -> None:
+        """Mirror the conversation in the mascot: working while it thinks, waiting while it needs you."""
+        if state in ("working", "starting"):
+            self.sessions["nina-chat"] = {"state": "working", "last": time.monotonic(), "tool": None}
+        else:
+            self.sessions.pop("nina-chat", None)
+        self.touch()
+        self.update()
+
+    def on_chat_activity(self) -> None:
+        st = self.sessions.get("nina-chat")
+        if st is not None:
+            st["last"] = time.monotonic()
+
+    def toggle_chat(self, text: str = "") -> None:
+        if not self.ensure_chat():
+            return
+        self.touch()
+        if self.chat_box.isVisible() and not text:
+            self.chat_box.hide()
+            return
+        self.chat_box.show_near(self)
+        if text:
+            self.chat_controller.ask(text)
+
     def new_agent(self) -> None:
         self.show_agents()
         if self.agents_panel is not None and self.agents_panel.managed_tab is not None:
@@ -673,6 +736,10 @@ class Nina(QWidget):
             self.show()
             self.raise_()
             self.say(_("I'm here!"))
+        elif cmd == "chat":
+            self.toggle_chat()
+        elif cmd == "ask" and arg:
+            self.toggle_chat(arg)
         elif cmd == "say" and arg:
             self.touch()
             self.say(arg, 4)

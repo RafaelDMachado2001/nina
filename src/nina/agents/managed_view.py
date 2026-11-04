@@ -37,6 +37,14 @@ LOG_STYLE = {"user": "#7ed321", "assistant": "#e6e8ec", "tool": "#8a909c", "deni
              "error": "#ff6b6b", "result": "#6fb3ff", "info": "#8a909c"}
 
 
+def format_body(text: str) -> str:
+    """Escape `text` and apply the tiny Markdown subset used in the logs (**bold**, `code`, line breaks)."""
+    body = html.escape(text)
+    body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)                      # **bold**
+    body = re.sub(r"`([^`\n]+)`", r"<code style='color:#f2c9a0'>\1</code>", body)   # `code`
+    return body.replace("\n", "<br>")
+
+
 class NewAgentDialog(QDialog):
     def __init__(self, parent, roles: dict, ctx: dict):
         super().__init__(parent)
@@ -331,10 +339,7 @@ class ManagedTab(QWidget):
     def append_line(self, kind: str, text: str) -> None:
         who = {"user": _("you"), "assistant": _("agent")}.get(kind, "")
         prefix = f"<b>{who}:</b> " if who else ""
-        body = html.escape(text)
-        body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)                      # **bold**
-        body = re.sub(r"`([^`\n]+)`", r"<code style='color:#f2c9a0'>\1</code>", body)   # `code`
-        body = body.replace("\n", "<br>")
+        body = format_body(text)
         self.log.append(f"<div style='color:{LOG_STYLE.get(kind, '#e6e8ec')}; margin-bottom:6px'>{prefix}{body}</div>")
 
     def update_item(self, agent_id: str) -> None:

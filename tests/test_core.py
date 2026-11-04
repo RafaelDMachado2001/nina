@@ -242,6 +242,65 @@ class MascotStateTest(IsolatedHome):
         self.assertTrue(kept[0].read_bytes().startswith(b"this is not"))
 
 
+class ChatIntegrationTest(IsolatedHome):
+    def setUp(self):
+        super().setUp()
+        self.n = Nina()
+        self.launched = []
+        self.n.launch = lambda *a, **k: self.launched.append(a)
+        self.addCleanup(lambda: (self.n.shutdown(), self.n.close()))
+
+    def release(self):
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        p = QPointF(10, 10)
+
+        def event(kind):
+            return QMouseEvent(kind, p, p, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+
+        self.n.mousePressEvent(event(QEvent.MouseButtonPress))
+        self.n.mouseReleaseEvent(event(QEvent.MouseButtonRelease))
+
+    def double_click(self):
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        p = QPointF(10, 10)
+        self.n.mouseDoubleClickEvent(QMouseEvent(QEvent.MouseButtonDblClick, p, p, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+
+    def test_single_click_opens_claude_after_the_double_click_interval(self):
+        self.release()
+        self.assertEqual(self.launched, [])            # waiting to see whether a second click follows
+        self.n.single_click()
+        self.assertEqual(len(self.launched), 1)
+
+    def test_double_click_opens_the_chat_and_not_the_terminal(self):
+        self.release()
+        self.double_click()
+        self.n.single_click()
+        self.assertEqual(self.launched, [])
+        self.assertTrue(self.n.chat_box.isVisible())
+        self.double_click()
+        self.assertFalse(self.n.chat_box.isVisible())   # toggles
+
+    def test_chat_commands_and_mascot_mood(self):
+        self.n.handle_command("chat")
+        self.assertTrue(self.n.chat_box.isVisible())
+        self.n.chat_controller.set_status("working")
+        self.assertEqual(self.n.mode(), "work")
+        self.n.chat_controller.set_status("idle")
+        self.assertEqual(self.n.mode(), "normal")
+
+    def test_ask_command_sends_the_text(self):
+        sent = []
+        self.n.ensure_chat()
+        self.n.chat_controller.ask = lambda text: sent.append(text) or True
+        self.n.handle_command("ask what changed today?")
+        self.assertEqual(sent, ["what changed today?"])
+
+    def test_menu_offers_the_chat(self):
+        self.assertIn("Talk to NINA...", [a.text() for a in self.n.build_menu().actions()])
+
+
 class PluginApiTest(IsolatedHome):
     def make_plugin(self, name, body):
         d = self.config_file.parent / "plugins"
