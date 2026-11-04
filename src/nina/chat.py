@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -259,9 +259,17 @@ class ChatBox(QWidget):
             y = min(a.bottom() + 8, screen.bottom() - self.height() - 8)
         self.move(x, y)
         self.show()
+        # The window manager places and decorates the window after it is shown (frame and shadow are invisible to Qt
+        # at this point), so check again once it has settled and keep a margin clear of the mascot.
+        QTimer.singleShot(150, lambda: self.clear_of(anchor))
         self.raise_()
         self.activateWindow()
         self.input.setFocus()
+
+    def clear_of(self, anchor: QWidget, margin: int = 32) -> None:
+        g, a = self.geometry(), anchor.geometry()
+        if g.intersects(a.adjusted(-margin, -margin, margin, margin)) and g.top() < a.top():
+            self.move(self.x(), self.y() - (g.bottom() - (a.top() - margin)))
 
     def keyPressEvent(self, e) -> None:
         if e.key() == Qt.Key_Escape:
