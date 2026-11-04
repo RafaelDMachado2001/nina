@@ -116,8 +116,12 @@ class Runner:
         asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     # ---- API (called from the UI thread) ---------------------------------------------------------
-    def start(self, role: dict, cwd: str, prompt: str, account: str = "", config_dir: str | None = None) -> str:
+    def start(self, role: dict, cwd: str, prompt: str | None, account: str = "", config_dir: str | None = None,
+              resume: str | None = None) -> str:
+        """Start an agent. With `resume` (a Claude session id) the conversation continues where it stopped;
+        `prompt` may then be None to wait for the user's next message."""
         agent = _Agent(uuid.uuid4().hex[:12], role, str(cwd), account, config_dir)
+        agent.session_id = resume
         self.agents[agent.id] = agent
         self._submit(self._launch(agent, prompt))
         return agent.id
@@ -194,6 +198,8 @@ class Runner:
             can_use_tool=lambda tool, tool_input, ctx: self._can_use_tool(agent, tool, tool_input),
             stderr=lambda line: self.emit(agent.id, "stderr", clip(line, 300)),
         )
+        if agent.session_id:
+            kwargs["resume"] = agent.session_id
         if role.get("model"):
             kwargs["model"] = role["model"]
         if self.claude_bin:
@@ -209,13 +215,16 @@ class Runner:
             async with self.factory(self._options(agent)) as client:
                 agent.client = client
                 text = prompt
-                while text is not None:
-                    self.emit(agent.id, "status", "working")
-                    await client.query(text)
-                    async for msg in client.receive_response():
-                        self._handle(agent, msg)
+                while True:
+                    if text:
+                        self.emit(agent.id, "status", "working")
+                        await client.query(text)
+                        async for msg in client.receive_response():
+                            self._handle(agent, msg)
                     self.emit(agent.id, "status", "idle")
                     text = await agent.queue.get()      # None = close
+                    if text is None:
+                        break
         except asyncio.CancelledError:
             pass
         except Exception as e:

@@ -18,7 +18,7 @@ Clique nela para abrir o [Claude Code](https://docs.claude.com/en/docs/claude-co
 - **Painel de agentes**: cada sessão e subagente do Claude Code em árvore, com estado, última ação, linha do tempo e conversa.
 - **Grafo de agentes**: grafo ao vivo, estilo Obsidian, de sessões, subagentes, ferramentas, servidores MCP e arquivos, com pulsos que mostram o fluxo de dados
   a cada evento e um **replay** na linha do tempo.
-- **Agentes gerenciados** (opcional): lance agentes do Claude por *papel*, converse com eles, interrompa e aprove cada ação arriscada num diálogo. Inclui um
+- **Agentes gerenciados** (opcional): lance agentes do Claude por *papel*, converse com eles, interrompa, retome depois de reiniciar e aprove cada ação arriscada num diálogo. Inclui um
   **criador de agentes** que entrevista você e grava subagentes e skills do projeto, um arquivo aprovado por vez.
 - **Plugins**: pequenos arquivos Python locais acrescentam alertas e itens de menu (veja abaixo).
 - Interface em inglês com tradução completa para português do Brasil (`"language": "pt-BR"`); um novo idioma é só um arquivo de catálogo.
@@ -173,10 +173,10 @@ sempre sai com 0 e engole qualquer erro, então nunca atrapalha o Claude Code, n
 ## Limitações conhecidas
 
 - No Python 3.10 e 3.11 a NINA precisa de um PySide6 anterior à 6.12 (a 6.12.0 tem um bug de contagem de referências que aborta o processo); os metadados do pacote já restringem isso, e a NINA se recusa a iniciar numa combinação ruim em vez de travar depois.
-- Só Linux/X11 por enquanto; em Wayland puro o comportamento é limitado pelo compositor (por isso ela roda via XWayland).
-- Sessões observadas (abertas nos seus próprios terminais) são somente leitura no painel; dá para copiar um comando `claude --resume`. Só agentes gerenciados podem ser conduzidos pela NINA.
-- Agentes gerenciados não são retomados depois que a NINA reinicia.
+- Só Linux/X11 por enquanto; em Wayland puro o comportamento é limitado pelo compositor (por isso ela roda via XWayland). Windows e macOS não estão nos planos por ora.
+- Sessões observadas (abertas nos seus próprios terminais) não podem ser conduzidas pelo painel: ele é somente leitura. **Abrir no terminal** reabre a sessão com `claude --resume`, na conta em que ela rodou, e **Copiar comando de retomada** entrega o comando. Só agentes gerenciados podem ser conduzidos pela NINA.
+- Um agente gerenciado encerrado, ou ainda aberto quando a NINA fechou, volta na aba **Gerenciados** como *encerrado*, e **Retomar** continua a mesma sessão do Claude. O log visível é mantido (últimas 200 linhas, em `~/.local/state/nina/managed.json`, legível só por você); pedidos de permissão pendentes não.
 
 ## Licença
 
-A ser adicionada.
+[MIT](LICENSE) © 2026 Rafael Machado.

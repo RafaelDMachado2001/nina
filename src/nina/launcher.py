@@ -1,5 +1,6 @@
 """Open Claude Code in a terminal emulator, and start NINA with the desktop session (autostart)."""
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -31,12 +32,14 @@ def terminal_command(term: str, shell_cmd: str) -> list | None:
     return table.get(term)
 
 
-def claude_command(slug: str, prof: dict) -> str | None:
+def claude_command(slug: str, prof: dict, resume: str = "") -> str | None:
     """Shell snippet that selects the account and builds the `claude` call. None if the account does not exist."""
     adir = config.account_dir(slug)
     if slug and adir is None:
         return None
     parts = ["command", "claude"]   # `command` bypasses any `claude` shell function/alias (multi-account setups)
+    if resume:
+        parts += ["--resume", resume]
     for d in prof.get("add_dirs") or []:
         parts += ["--add-dir", str(Path(d).expanduser())]
     perms = Path(str(prof.get("permissions_file") or "")).expanduser()
@@ -56,10 +59,17 @@ def claude_command(slug: str, prof: dict) -> str | None:
     return env + shlex.join(parts)
 
 
-def open_claude(directory: str, preferred: str = "", slug: str = "", prof: dict | None = None) -> str | None:
+def account_of_transcript(path: str) -> str:
+    """The account slug a Claude Code transcript belongs to ('' when it is the plain ~/.claude)."""
+    m = re.search(r"/accounts/([^/]+)/projects/", str(path or ""))
+    return m.group(1) if m else ""
+
+
+def open_claude(directory: str, preferred: str = "", slug: str = "", prof: dict | None = None,
+                resume: str = "") -> str | None:
     """Open a terminal running `claude` in `directory`. Returns an error message, or None on success."""
     d = directory if Path(directory).is_dir() else str(Path.home())
-    run = claude_command(slug, prof or {})
+    run = claude_command(slug, prof or {}, resume)
     if run is None:
         return _("The account '{slug}' does not exist in {root}. Create it with your multi-account manager.",
                  slug=slug, root=config.ACCOUNTS_ROOT)

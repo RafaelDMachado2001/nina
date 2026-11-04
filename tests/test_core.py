@@ -47,6 +47,16 @@ class FreshInstallTest(IsolatedHome):
         self.assertIn("--add-dir '/srv/a b'", cmd)
         self.assertIn("--append-system-prompt 'Be brief.'", cmd)
 
+    def test_resume_a_session(self):
+        self.assertEqual(launcher.claude_command("", {}, resume="abc-123"), "command claude --resume abc-123")
+        self.assertEqual(launcher.claude_command("", {}, resume="a b"), "command claude --resume 'a b'")
+
+    def test_account_of_a_transcript(self):
+        f = launcher.account_of_transcript
+        self.assertEqual(f("/root/.claude/accounts/work/projects/-srv-x/abc.jsonl"), "work")
+        self.assertEqual(f("/home/me/.claude/projects/-srv-x/abc.jsonl"), "")
+        self.assertEqual(f(None), "")
+
     def test_socket_path(self):
         self.assertEqual(compute_sock_path(str(self.home), 7), str(self.home / "nina.sock"))
         self.assertEqual(compute_sock_path("", 7), "/tmp/nina-7.sock")

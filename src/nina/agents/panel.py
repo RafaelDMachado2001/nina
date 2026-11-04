@@ -75,10 +75,12 @@ def folder(cwd: str | None) -> str:
 
 
 class AgentsPanel(QWidget):
-    def __init__(self, store: AgentStore, managed_tab=None):
+    def __init__(self, store: AgentStore, managed_tab=None, on_resume=None):
+        """`on_resume(cwd, session_id, transcript)` reopens a session in a terminal; without it the button is hidden."""
         super().__init__()
         self.store = store
         self.managed_tab = managed_tab
+        self.on_resume = on_resume
         self.selected = None
         self.setWindowTitle(_("NINA — Agents"))
         self.resize(1160, 600)
@@ -114,12 +116,16 @@ class AgentsPanel(QWidget):
 
         self.resume_btn = QPushButton(_("Copy resume command"))
         self.resume_btn.clicked.connect(self.copy_resume)
+        self.terminal_btn = QPushButton(_("Open in terminal"))
+        self.terminal_btn.clicked.connect(self.open_in_terminal)
+        self.terminal_btn.setVisible(on_resume is not None)
         self.clear_btn = QPushButton(_("Clear ended"))
         self.clear_btn.clicked.connect(self.clear_finished)
         self.hint = QLabel(_(HINT_READONLY))
         self.hint.setStyleSheet("color: #8a909c;")
         buttons = QHBoxLayout()
         buttons.addWidget(self.resume_btn)
+        buttons.addWidget(self.terminal_btn)
         buttons.addWidget(self.clear_btn)
         buttons.addStretch(1)
         buttons.addWidget(self.hint)
@@ -372,6 +378,11 @@ class AgentsPanel(QWidget):
         QApplication.clipboard().setText(cmd)
         self.hint.setText(_("Command copied."))
         QTimer.singleShot(2500, lambda: self.hint.setText(_(HINT_READONLY)))
+
+    def open_in_terminal(self) -> None:
+        agent = self.store.get(self.selected) if self.selected else None
+        if agent and agent.get("session_id") and self.on_resume:
+            self.on_resume(agent.get("cwd") or "", agent["session_id"], agent.get("transcript") or "")
 
     def clear_finished(self) -> None:
         self.store.clear_finished()

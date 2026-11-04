@@ -388,6 +388,14 @@ class Nina(QWidget):
         self.cfg["recent"] = [directory] + recent[:7]
         config.save_config(self.cfg)
 
+    def resume_in_terminal(self, directory: str, session_id: str, transcript: str = "") -> None:
+        """Reopen an observed Claude Code session in a terminal (`claude --resume`), on the account it ran under."""
+        slug = launcher.account_of_transcript(transcript) or self.cfg.get("account", "")
+        err = launcher.open_claude(directory or config.default_dir_of(self.cfg), self.cfg.get("terminal", ""), slug,
+                                   config.profile_of(self.cfg, slug), resume=session_id)
+        if err:
+            QMessageBox.warning(self, APP_NAME, err)
+
     def pick_folder(self, title: str) -> str | None:
         d = QFileDialog.getExistingDirectory(self, title, self.cfg["default_dir"])
         return d or None
@@ -608,7 +616,7 @@ class Nina(QWidget):
             return
         if self.agents_panel is None:
             from nina.agents.panel import AgentsPanel
-            self.agents_panel = AgentsPanel(self.agents, self.make_managed_tab())
+            self.agents_panel = AgentsPanel(self.agents, self.make_managed_tab(), on_resume=self.resume_in_terminal)
         self.agents_panel.show()
         self.agents_panel.raise_()
         self.agents_panel.activateWindow()

@@ -15,7 +15,7 @@ Click her to open [Claude Code](https://docs.claude.com/en/docs/claude-code) in 
 - **Reacts to what Claude is doing** (through Claude Code hooks): a focused look and a spinning shuriken while it works, a short bubble with the current activity ("Editing...", "Running a command..."), wide eyes with a pinned bubble when it needs your permission, and a celebration when it is done. With several sessions open, waiting beats working beats idle.
 - **Agents panel**: every Claude Code session and subagent as a tree, with its state, last action, timeline and conversation.
 - **Agent graph**: an Obsidian-style live graph of sessions, subagents, tools, MCP servers and files, with pulses showing the data flow as events happen, and a timeline **replay**.
-- **Managed agents** (optional): launch Claude agents by *role*, chat with them, interrupt them, and approve every risky action in a dialog. Includes an **agent builder** that interviews you and writes project subagents and skills, one approved file at a time.
+- **Managed agents** (optional): launch Claude agents by *role*, chat with them, interrupt them, resume them after a restart, and approve every risky action in a dialog. Includes an **agent builder** that interviews you and writes project subagents and skills, one approved file at a time.
 - **Plugins**: small local Python files can add alerts and menu items (see below).
 - English UI with a complete Brazilian Portuguese translation (`"language": "pt-BR"`); new languages are a single catalog file.
 
@@ -180,10 +180,10 @@ context), it always exits 0, and it swallows every error, so it can never get in
 ## Known limitations
 
 - On Python 3.10 and 3.11 NINA needs PySide6 older than 6.12 (6.12.0 has a reference-count bug that aborts the process); the package metadata pins it, and NINA refuses to start with a bad combination instead of crashing later.
-- Linux/X11 only for now; behaviour on pure Wayland is limited by the compositor (that is why she runs through XWayland).
-- Observed sessions (started in your own terminals) are read-only in the panel; you can copy a `claude --resume` command. Only managed agents can be driven from NINA.
-- Managed agents are not resumed after NINA restarts.
+- Linux/X11 only for now; behaviour on pure Wayland is limited by the compositor (that is why she runs through XWayland). Windows and macOS are not planned for now.
+- Observed sessions (started in your own terminals) cannot be driven from the panel: it is read-only. **Open in terminal** reopens one with `claude --resume`, on the account it ran under, and **Copy resume command** gives you the command. Only managed agents can be driven from NINA.
+- A managed agent that was closed, or still open when NINA quit, comes back in the **Managed** tab as *closed* and **Resume** continues the same Claude session. The visible log is kept (last 200 lines, in `~/.local/state/nina/managed.json`, readable only by you); permission requests that were pending are not.
 
 ## License
 
-To be added.
+[MIT](LICENSE) © 2026 Rafael Machado.

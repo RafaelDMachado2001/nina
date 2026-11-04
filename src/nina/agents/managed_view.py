@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina.agents import managed
+from nina.agents import managed, managed_store
 from nina.agents import roles as roles_mod
 from nina.i18n import _
 
@@ -112,14 +112,16 @@ class ManagedTab(QWidget):
     attention = Signal(str)                  # short text for the mascot to say
     _event = Signal(str, str, object)        # emitted from the agents' thread, delivered on the UI thread
 
-    def __init__(self, context, parent=None):
-        """`context()` devolve {accounts, account, accounts_root, default_dir, roles_dir, claude_bin}."""
+    def __init__(self, context, parent=None, store_path=None):
+        """`context()` returns {accounts, account, accounts_root, default_dir, roles_dir, claude_bin}.
+        `store_path` is where agents are remembered between runs (default: the state directory)."""
         super().__init__(parent)
         self.context = context
         self.agents = {}
         self.current = None
         self.queue = []
         self.asking = False
+        self.store_path = store_path
         ctx = context()
         self.runner = managed.Runner(self._event.emit, managed.find_claude_bin(ctx.get("claude_bin", "")))
         self._event.connect(self.on_event)
@@ -145,10 +147,12 @@ class ManagedTab(QWidget):
         self.send_btn.clicked.connect(self.send)
         self.stop_turn_btn = QPushButton(_("Interrupt"))
         self.stop_turn_btn.clicked.connect(self.interrupt)
+        self.resume_btn = QPushButton(_("Resume"))
+        self.resume_btn.clicked.connect(self.resume_agent)
         self.close_btn = QPushButton(_("Close"))
         self.close_btn.clicked.connect(self.close_agent)
         row = QHBoxLayout()
-        for w in (self.input, self.send_btn, self.stop_turn_btn, self.close_btn):
+        for w in (self.input, self.send_btn, self.stop_turn_btn, self.resume_btn, self.close_btn):
             row.addWidget(w, 1 if w is self.input else 0)
         right = QWidget()
         rl = QVBoxLayout(right)
@@ -164,6 +168,7 @@ class ManagedTab(QWidget):
         split.setStretchFactor(1, 3)
         layout = QVBoxLayout(self)
         layout.addWidget(split)
+        self.restore()
         self.refresh_controls()
 
     # ---- lifecycle ---------------------------------------------------------------------------
@@ -203,8 +208,60 @@ class ManagedTab(QWidget):
             self.runner.interrupt(self.current)
 
     def close_agent(self) -> None:
-        if self.current in self.agents:
+        a = self.agents.get(self.current)
+        if a is None:
+            return
+        if a["status"] in ("closed", "error"):     # already stopped: this button forgets the agent
+            self.forget(self.current)
+        else:
             self.runner.stop(self.current)
+
+    # ---- remembering agents between runs ---------------------------------------------------------
+    def persist(self) -> None:
+        managed_store.save([{"role": a["role"]["id"], "cwd": a["cwd"], "account": a["account"],
+                             "session": a["session"], "cost": a["cost"], "log": a["log"]}
+                            for a in self.agents.values()], self.store_path)
+
+    def restore(self) -> None:
+        """Bring back the agents saved by a previous run as closed entries that can be resumed."""
+        known = roles_mod.load_roles(self.context().get("roles_dir"))
+        for i, saved in enumerate(managed_store.load(self.store_path)):
+            role = known.get(saved["role"])
+            if role is None:
+                continue
+            item = QListWidgetItem()
+            agent_id = f"saved-{i}"
+            item.setData(Qt.UserRole, agent_id)
+            self.agents[agent_id] = {"role": role, "cwd": saved["cwd"], "account": saved["account"], "status": "closed",
+                                     "log": list(saved["log"]), "session": saved["session"], "cost": saved["cost"],
+                                     "item": item}
+            self.listing.addItem(item)
+            self.update_item(agent_id)
+
+    def forget(self, agent_id: str) -> None:
+        a = self.agents.pop(agent_id, None)
+        if a is None:
+            return
+        self.listing.takeItem(self.listing.row(a["item"]))
+        self.persist()
+        self.refresh_controls()
+
+    def resume_agent(self) -> None:
+        a = self.agents.get(self.current)
+        if a is None or a["status"] not in ("closed", "error") or not a["session"]:
+            return
+        ctx = self.context()
+        config_dir = None
+        if a["account"] and (Path(ctx["accounts_root"]) / a["account"]).is_dir():
+            config_dir = str(Path(ctx["accounts_root"]) / a["account"])
+        old_id, item = self.current, a["item"]
+        new_id = self.runner.start(a["role"], a["cwd"], None, a["account"], config_dir, resume=a["session"])
+        item.setData(Qt.UserRole, new_id)
+        self.agents[new_id] = {**self.agents.pop(old_id), "status": "starting"}
+        self.current = new_id
+        self.add_log(new_id, "info", _("Conversation resumed."))
+        self.update_item(new_id)
+        self.refresh_controls()
 
     def shutdown(self) -> None:
         self.runner.shutdown()
@@ -239,6 +296,8 @@ class ManagedTab(QWidget):
         elif kind == "permission":
             self.queue.append((agent_id, payload))
             self.ask_next()
+        if kind in ("session", "result") or (kind == "status" and payload == "closed"):
+            self.persist()
         self.update_item(agent_id)
         self.refresh_controls()
 
@@ -296,7 +355,10 @@ class ManagedTab(QWidget):
         self.input.setEnabled(a is not None and a["status"] == "idle")
         self.send_btn.setEnabled(a is not None and a["status"] == "idle")
         self.stop_turn_btn.setEnabled(a is not None and a["status"] == "working")
-        self.close_btn.setEnabled(alive)
+        stopped = a is not None and a["status"] in ("closed", "error")
+        self.resume_btn.setEnabled(stopped and bool(a["session"]))
+        self.close_btn.setText(_("Remove") if stopped else _("Close"))
+        self.close_btn.setEnabled(alive or stopped)
         if a is None:
             self.header.setText(_("Create an agent to get started."))
             return

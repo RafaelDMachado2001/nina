@@ -166,6 +166,36 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(o.cwd, self.cwd)
         self.assertIn("code reviewer", o.system_prompt["append"])
 
+    def test_resume_passes_the_session_to_the_sdk(self):
+        async def script(client):
+            yield self.result("sess-9")
+
+        self.make(script)
+        self.runner.start(roles.load_roles()["general"], self.cwd, "continue", resume="sess-9")
+        self.wait_for("result")
+        self.assertEqual(self.client.options.resume, "sess-9")
+
+    def test_resume_without_a_prompt_waits_for_the_user(self):
+        async def script(client):
+            yield self.result("sess-9")
+
+        self.make(script)
+        aid = self.runner.start(roles.load_roles()["general"], self.cwd, None, resume="sess-9")
+        self.wait_for("status", lambda p: p == "idle")
+        self.assertEqual(self.client.queries, [])
+        self.runner.send(aid, "go on")
+        self.wait_for("result")
+        self.assertEqual(self.client.queries, ["go on"])
+
+    def test_fresh_agent_does_not_resume(self):
+        async def script(client):
+            yield self.result()
+
+        self.make(script)
+        self.runner.start(roles.load_roles()["general"], self.cwd, "x")
+        self.wait_for("result")
+        self.assertIsNone(self.client.options.resume)
+
     def test_permission_allowed_denied_and_policy(self):
         sdk = self.sdk
         outcomes = {}
