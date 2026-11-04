@@ -1,17 +1,16 @@
 """
 Claude Code hook for NINA. Standard library only: it runs on every tool call and has to be instant.
 
-Reads the hook event JSON from stdin and forwards one line to NINA over a Unix socket. It never gets in
-Claude Code's way: any error is swallowed, the exit code is always 0 and nothing is ever written to stdout
+Reads the hook event JSON from stdin and forwards one line to NINA over a Unix socket (a named pipe on
+Windows). It never gets in Claude Code's way: any error is swallowed, the exit code is always 0 and nothing is ever written to stdout
 (on some events stdout becomes model context).
 
 Run it as `python -m nina.hook` (this is what `nina --install-hooks` registers) or via the `nina-hook` command.
 """
 import json
-import socket
 import sys
 
-from nina.sockpath import socket_paths
+from nina.sockpath import send_line, socket_paths
 
 TIMEOUT_S = 0.3
 
@@ -53,16 +52,11 @@ def forward() -> None:
     event = {k: v for k, v in event.items() if v not in (None, "")}
     line = "hook " + json.dumps(event, ensure_ascii=False) + "\n"
     for path in socket_paths():
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            s.settimeout(TIMEOUT_S)
-            s.connect(path)
-            s.sendall(line.encode())
+            send_line(path, line.encode(), TIMEOUT_S)
             return
         except OSError:
             continue
-        finally:
-            s.close()
 
 
 def run() -> None:
