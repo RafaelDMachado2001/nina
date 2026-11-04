@@ -639,11 +639,27 @@ class Nina(QWidget):
         ctrl.state_changed.connect(self.on_chat_state)
         ctrl.message.connect(lambda *_a: self.on_chat_activity())
         ctrl.finished.connect(self.celebrate)
-        self.chat_controller, self.chat_box = ctrl, chat.ChatBox(ctrl)
+        ctrl.permission_asked.connect(self.on_chat_permission)
+        ctrl.permission_cleared.connect(lambda: self.on_chat_state(ctrl.status))
+        self.chat_controller = ctrl
+        self.chat_box = chat.ChatBox(ctrl, self.cfg.get("chat_theme", "dark"), self.save_chat_theme)
         return True
+
+    def save_chat_theme(self, theme: str) -> None:
+        self.cfg["chat_theme"] = theme
+        config.save_config(self.cfg)
+
+    def on_chat_permission(self, _req: dict) -> None:
+        self.sessions["nina-chat"] = {"state": "waiting", "last": time.monotonic(), "tool": None,
+                                      "text": _("I need your permission!")}
+        self.jump = [2, 4, 4, 2]
+        self.touch()
+        self.update()
 
     def on_chat_state(self, state: str) -> None:
         """Mirror the conversation in the mascot: working while it thinks, waiting while it needs you."""
+        if self.chat_controller is not None and self.chat_controller.current_req is not None:
+            return          # the permission alert stays until you answer
         if state in ("working", "starting"):
             self.sessions["nina-chat"] = {"state": "working", "last": time.monotonic(), "tool": None}
         else:

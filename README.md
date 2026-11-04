@@ -121,6 +121,7 @@ Double click her (or right click → **Talk to NINA...**, or run `nina chat`) an
 Behind it is one persistent managed agent (the **General assistant** role, in your default folder and active account):
 the conversation **continues between runs**, **New chat** starts a fresh one, and she shows the same states as for any agent
 (a spinning shuriken while it thinks, the permission alert when it needs you). Reads are pre-approved; every write or command asks **Allow / Deny**.
+The window is frameless (drag the header, resize from the bottom-right corner) and has a dark and a light theme (menu ⋮); `Ctrl+N` starts a new chat and the permission sheet answers **Deny** to `Enter`/`Esc` and **Allow** to `Alt+P`.
 Set `"chat_role"` in `config.json` to use another role (for example your own `~/.config/nina/roles/<id>.md`).
 
 For a **global shortcut** on GNOME run `nina --install-shortcut` (default `<Super>n`; `nina --install-shortcut "<Ctrl><Alt>n"` for another one;
@@ -162,6 +163,7 @@ A broken plugin never takes NINA down. Plugins run as you, so only put code you 
 | `scale` | Size: 3, 4 or 6 |
 | `claude_bin` | Path of `claude` for managed agents; empty = auto-detect |
 | `chat_role` | Role of the chat agent (default: the General assistant) |
+| `chat_theme` | `dark` (default) or `light`; also switchable from the chat window's menu |
 | `plugins` | `false` disables local plugins |
 
 Start with the system: right click → **Start with the system** (a freedesktop autostart entry).

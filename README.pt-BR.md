@@ -124,7 +124,8 @@ Você é um revisor... (o corpo é o prompt de sistema do papel)
 Dê um duplo clique nela (ou botão direito → **Conversar com a NINA...**, ou rode `nina chat`) e uma janela de conversa abre ao lado dela.
 Por trás há um agente gerenciado persistente (o papel **Assistente geral**, na sua pasta padrão e conta ativa): a conversa **continua entre execuções**,
 **Nova conversa** começa outra, e ela mostra os mesmos estados de qualquer agente (shuriken girando enquanto pensa, o alerta quando precisa de você).
-Leituras são pré-aprovadas; toda escrita ou comando pede **Permitir / Negar**. Use `"chat_role"` no `config.json` para outro papel.
+Leituras são pré-aprovadas; toda escrita ou comando pede **Permitir / Negar**. A janela não tem moldura (arraste pelo cabeçalho, redimensione pelo canto inferior direito) e tem tema escuro e claro (menu ⋮); `Ctrl+N` inicia uma nova conversa e a folha de permissão responde **Negar** a `Enter`/`Esc` e **Permitir** a `Alt+P`.
+Use `"chat_role"` no `config.json` para outro papel.
 
 Para um **atalho global** no GNOME rode `nina --install-shortcut` (padrão `<Super>n`; `nina --uninstall-shortcut` remove). Ele registra um atalho
 personalizado que executa `nina chat`; quem captura as teclas é o desktop, então funciona também no Wayland. Se a NINA roda com outro usuário que o da sessão
@@ -164,6 +165,7 @@ Um plugin com defeito nunca derruba a NINA. Plugins rodam como você, então só
 | `sleep_minutes` | Tempo ocioso até ela dormir |
 | `scale` | Tamanho: 3, 4 ou 6 |
 | `chat_role` | Papel do agente da conversa (padrão: Assistente geral) |
+| `chat_theme` | `dark` (padrão) ou `light`; também no menu da janela de conversa |
 | `claude_bin` | Caminho do `claude` para agentes gerenciados; vazio = detecta |
 | `plugins` | `false` desativa os plugins locais |
 

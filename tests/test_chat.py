@@ -153,22 +153,161 @@ class ChatControllerTest(IsolatedHome):
         self.assertEqual(chat.load_saved(self.state), {})
 
 
+class ChatPermissionTest(ChatControllerTest):
+    def asked(self, c):
+        got = []
+        c.permission_asked.connect(got.append)
+        cleared = []
+        c.permission_cleared.connect(lambda: cleared.append(1))
+        return got, cleared
+
+    def test_requests_are_asked_one_at_a_time(self):
+        c = self.make()
+        got, cleared = self.asked(c)
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "Bash", "detail": "ls"})
+        c.on_event("agent-1", "permission", {"req": "r2", "tool": "Edit", "detail": "a.txt"})
+        self.assertEqual([g["req"] for g in got], ["r1"])
+        c.answer(True)
+        self.assertEqual([g["req"] for g in got], ["r1", "r2"])
+        c.answer(False)
+        self.assertEqual(self.runner.resolved, [("r1", True), ("r2", False)])
+        self.assertIsNone(c.current_req)
+        self.assertIn(("info", "Allowed: Bash"), self.messages)
+        self.assertIn(("info", "Denied: Edit"), self.messages)
+
+    def test_answer_without_a_request_does_nothing(self):
+        c = self.make()
+        c.ask("hi")
+        c.answer(True)
+        self.assertEqual(self.runner.resolved, [])
+
+    def test_reset_and_errors_drop_pending_requests(self):
+        c = self.make()
+        got, cleared = self.asked(c)
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "Bash", "detail": "ls"})
+        c.on_event("agent-1", "permission", {"req": "r2", "tool": "Bash", "detail": "pwd"})
+        c.reset()
+        self.assertEqual((c.current_req, c.queue, len(cleared)), (None, [], 1))
+        c.ask("again")
+        c.on_event("agent-2", "permission", {"req": "r3", "tool": "Bash", "detail": "ls"})
+        c.on_event("agent-2", "error", "boom")
+        self.assertIsNone(c.current_req)
+
+    def test_retry_sends_the_last_message_again(self):
+        c = self.make()
+        c.ask("first try")
+        c.on_event("agent-1", "error", "boom")
+        self.assertTrue(c.retry())
+        self.assertEqual(self.runner.started[1]["prompt"], "first try")
+        self.assertFalse(self.make().retry())          # nothing to retry
+
+
 class ChatBoxTest(IsolatedHome):
-    def test_input_is_disabled_while_the_agent_works_and_the_window_stays_on_screen(self):
-        from PySide6.QtWidgets import QWidget
+    def make(self, theme="dark", on_theme=None):
         ctx = {"accounts": [], "account": "", "accounts_root": str(self.accounts), "default_dir": str(self.home),
                "roles_dir": None, "claude_bin": ""}
-        c = chat.ChatController(lambda: ctx, runner_factory=FakeRunner, path=self.home / "chat.json")
-        box = chat.ChatBox(c)
+        self.runner = None
+
+        def factory(emit, claude_bin):
+            self.runner = FakeRunner(emit, claude_bin)
+            return self.runner
+
+        c = chat.ChatController(lambda: ctx, runner_factory=factory, path=self.home / "chat.json")
+        box = chat.ChatBox(c, theme, on_theme)
+        box.show()
         self.addCleanup(box.close)
+        return c, box
+
+    def test_starts_with_the_empty_state_and_switches_to_the_log(self):
+        c, box = self.make()
+        self.assertIs(box.body.currentWidget(), box.empty)
+        box.suggestions[0].click()
+        self.assertEqual(self.runner.started[0]["prompt"], "Explain this repository")
+        self.assertIs(box.body.currentWidget(), box.log)
+        c.reset()
+        self.assertIs(box.body.currentWidget(), box.empty)
+
+    def test_input_is_disabled_while_the_agent_works(self):
+        c, box = self.make()
         self.assertTrue(box.input.isEnabled())
+        self.assertFalse(box.stop_btn.isVisible())
         c.set_status("working")
         self.assertFalse(box.input.isEnabled())
-        self.assertTrue(box.stop_btn.isEnabled())
+        self.assertFalse(box.send_btn.isEnabled())
+        self.assertTrue(box.stop_btn.isVisible())
+        self.assertTrue(box.thinking.isVisible())
+        self.assertEqual(box.status.text(), "thinking")
         c.set_status("idle")
         self.assertTrue(box.input.isEnabled())
+        self.assertFalse(box.thinking.isVisible())
+        self.assertEqual(box.status.text(), "ready")
+
+    def test_permission_sheet_replaces_the_composer_and_deny_is_the_default(self):
+        c, box = self.make()
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "Bash", "detail": "pytest -q"})
+        self.assertTrue(box.sheet.isVisible())
+        self.assertFalse(box.composer.isVisible())
+        self.assertIn("Bash", box.perm_title.text())
+        self.assertEqual(box.perm_command.text(), "pytest -q")
+        self.assertEqual(box.status.text(), "needs permission")
+        box.deny_btn.click()
+        self.assertEqual(self.runner.resolved, [("r1", False)])
+        self.assertFalse(box.sheet.isVisible())
+
+    def test_enter_and_escape_deny_but_alt_p_allows(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent
+        c, box = self.make()
+        c.ask("hi")
+        for key, expected in ((Qt.Key_Return, False), (Qt.Key_Escape, False)):
+            c.on_event("agent-1", "permission", {"req": f"r{key}", "tool": "Bash", "detail": "ls"})
+            box.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier))
+            self.assertEqual(self.runner.resolved[-1], (f"r{key}", expected))
+        c.on_event("agent-1", "permission", {"req": "rp", "tool": "Bash", "detail": "ls"})
+        box.allow_shortcut()
+        self.assertEqual(self.runner.resolved[-1], ("rp", True))
+
+    def test_permission_request_opens_a_hidden_window(self):
+        c, box = self.make()
+        box.hide()
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "Bash", "detail": "ls"})
+        self.assertTrue(box.isVisible())
+
+    def test_messages_render_and_theme_switch_keeps_them(self):
+        saved = []
+        c, box = self.make(on_theme=saved.append)
+        c.message.emit("user", "hello")
+        c.message.emit("assistant", "**hi** there")
+        c.message.emit("error", "boom")
+        self.assertIn("hello", box.log.toPlainText())
+        self.assertIn("Try again", box.log.toPlainText())
+        box.set_theme("light")
+        self.assertEqual((box.theme, saved), ("light", ["light"]))
+        self.assertIn("hi there", box.log.toPlainText())
+        self.assertIn("#e8e5ff", box.log.toHtml().lower())      # the light user bubble colour
+        self.assertIn(chat.chat_theme.THEMES["light"]["bg"], box.styleSheet())
+
+    def test_retry_link_resends(self):
+        from PySide6.QtCore import QUrl
+        c, box = self.make()
+        c.ask("do it")
+        c.on_event("agent-1", "error", "boom")
+        box.on_link(QUrl("nina:retry"))
+        self.assertEqual(len(self.runner.started), 2)
+
+    def test_unknown_theme_falls_back_to_dark(self):
+        self.assertEqual(self.make("neon")[1].theme, "dark")
+
+    def test_window_stays_on_screen(self):
+        from PySide6.QtWidgets import QWidget
+        c, box = self.make()
         anchor = QWidget()
-        anchor.setGeometry(0, 0, 100, 100)             # in the top-left corner: no room above
+        anchor.setGeometry(0, 0, 100, 100)             # top-left corner: no room above
         box.show_near(anchor)
         self.assertGreaterEqual(box.y(), 0)
         self.assertGreaterEqual(box.x(), 0)
