@@ -48,7 +48,36 @@ def socket_paths(windows: bool | None = None) -> list:
     if runtime and Path(runtime).is_dir():
         paths.append(str(Path(runtime) / "nina.sock"))
     paths.append(f"/tmp/nina-{uid}.sock")
+    paths.append(ui_socket_path(uid))        # reaches a NINA that runs as root on this user's desktop
     return list(dict.fromkeys(paths))
+
+
+def send_message(message: str, timeout: float = 0.5) -> bool:
+    """Deliver one command to a running NINA without starting Qt. False when none answers."""
+    for path in socket_paths():
+        try:
+            send_line(path, (message + "\n").encode(), timeout=timeout)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def desktop_uid() -> int | None:
+    """The user of the graphical session, when NINA runs as root inside it: the owner of the display's auth file
+    (or NINA_UI_UID). None when NINA runs as that user itself or when it cannot tell."""
+    if os.name != "posix" or os.getuid() != 0:
+        return None
+    try:
+        uid = int(os.environ["NINA_UI_UID"]) if os.environ.get("NINA_UI_UID") else os.stat(os.environ.get("XAUTHORITY", "")).st_uid
+    except (OSError, ValueError):
+        return None
+    return uid if uid != 0 else None
+
+
+def ui_socket_path(uid: int) -> str:
+    """A second, restricted channel in the desktop user's runtime dir: a root NINA lets that user toggle the chat."""
+    return f"/run/user/{uid}/nina-ui.sock"
 
 
 def send_line(address: str, data: bytes, timeout: float = 0.3, windows: bool | None = None) -> None:

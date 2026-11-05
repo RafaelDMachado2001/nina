@@ -129,9 +129,8 @@ Leituras são pré-aprovadas; toda escrita ou comando pede **Permitir / Negar**.
 **Modo automático** (menu ⋮ → "Modo automático"): comandos de shell só de leitura (`ls`, `grep`, `git log`, `ssh servidor "psql -c 'select ...'"`, pipes desses) rodam sem perguntar; o resto continua perguntando. A folha passa a oferecer **Permitir sempre**, que salva uma regra em `~/.config/nina/auto-rules.json` para aquele comando e operação (`ssh servidor` + `UPDATE` libera qualquer `UPDATE` ali, mas um `DELETE` ainda pergunta). Nunca são salvos: `UPDATE`/`DELETE` sem `WHERE`, redirecionamento para arquivo, `sudo` e comandos que não dá para interpretar. Para apagar uma regra: menu → "Esquecer uma regra salva".
 Use `"chat_role"` no `config.json` para outro papel.
 
-Para um **atalho global** no GNOME rode `nina --install-shortcut` (padrão `<Super>n`; `nina --uninstall-shortcut` remove). Ele registra um atalho
-personalizado que executa `nina chat`; quem captura as teclas é o desktop, então funciona também no Wayland. Se a NINA roda com outro usuário que o da sessão
-gráfica, passe o comando que a alcança: `--command "sudo -n env XDG_RUNTIME_DIR=/run/user/0 /caminho/nina chat"`.
+Para um **atalho global** no GNOME rode `nina --install-shortcut` (padrão `<Super><Shift>n`, porque `<Super>n` sozinho é o "focar a notificação ativa" do GNOME; `nina --uninstall-shortcut` remove). Ele registra um atalho
+personalizado que executa `nina open`: abre ou fecha o chat e **liga a NINA antes quando ela está fechada** (pelo `nina.service`, se existir; senão como um novo processo). Quem captura as teclas é o desktop, então funciona também no Wayland. Se a NINA roda como root dentro da sessão (serviço do sistema), ligá-la pede a sua senha pelo `pkexec`, e uma NINA aberta é alcançada por um socket restrito em `/run/user/<uid>/` que só você usa e que só entende `chat` e `show`.
 
 ### Contas e perfis
 

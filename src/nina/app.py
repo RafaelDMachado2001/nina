@@ -17,9 +17,10 @@ Usage:
   nina show                  bring it to the front
   nina sleep                 send it to sleep
   nina chat                  open (or close) the chat window
+  nina open                  like chat, but starts NINA first when she is closed (what the shortcut runs)
   nina ask <text>            open the chat and send it a message
   nina --install-shortcut [keys] [--command cmd]
-                             GNOME: global shortcut that runs `nina chat` (default <Super>n)
+                             GNOME: global shortcut that runs `nina open` (default <Super><Shift>n)
   nina --uninstall-shortcut  remove that shortcut
   nina --install-hooks       connect NINA to Claude Code (merges hooks into settings.json)
   nina --uninstall-hooks     remove NINA's hooks
@@ -41,6 +42,47 @@ def send_to_running(message: str) -> bool:
         sock.disconnectFromServer()
         return True
     return False
+
+
+UI_COMMANDS = ("chat", "show")
+
+
+def start_ui_channel(nina):
+    from PySide6.QtNetwork import QLocalServer
+
+    from nina.sockpath import desktop_uid, ui_socket_path
+    uid = desktop_uid()
+    if uid is None or not Path(f"/run/user/{uid}").is_dir():
+        return None
+    path = ui_socket_path(uid)
+    QLocalServer.removeServer(path)
+    server = QLocalServer()
+    if not server.listen(path):
+        print(f"NINA: could not listen on {path}: {server.errorString()}", file=sys.stderr)
+        return None
+    try:
+        os.chown(path, uid, -1)
+        os.chmod(path, 0o600)
+    except OSError as e:
+        print(f"NINA: could not restrict {path}: {e}", file=sys.stderr)
+        server.close()
+        return None
+
+    def on_connection():
+        while server.hasPendingConnections():
+            conn = server.nextPendingConnection()
+
+            def read(conn=conn):
+                for line in bytes(conn.readAll()).decode(errors="ignore").splitlines():
+                    if line.strip() in UI_COMMANDS:
+                        nina.handle_command(line.strip())
+
+            conn.readyRead.connect(read)
+            conn.disconnected.connect(conn.deleteLater)
+            read()
+
+    server.newConnection.connect(on_connection)
+    return server
 
 
 def run_server(app) -> int:
@@ -82,6 +124,12 @@ def run_server(app) -> int:
 
     server.newConnection.connect(on_connection)
 
+    # A NINA running as root inside your desktop session also listens on a restricted channel that only you can
+    # reach (it is chowned to you) and that only understands "chat" and "show": enough to open her, nothing more.
+    ui_server = start_ui_channel(nina)
+    if ui_server is not None:
+        app.aboutToQuit.connect(ui_server.close)
+
     nina.show()
     nina.raise_()
     nina.say(_("Hi! I'm NINA"), 3)
@@ -99,6 +147,9 @@ def main(argv: list | None = None) -> int:
     if args and args[0] == "--version":
         print(f"nina {__version__}")
         return 0
+    if args == ["open"]:
+        from nina import opener
+        return opener.open_chat()
     if args and args[0] in ("--install-hooks", "--uninstall-hooks"):
         from nina import claude_hooks
         try:

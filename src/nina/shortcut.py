@@ -1,4 +1,4 @@
-"""A global keyboard shortcut that opens the chat. GNOME only: it registers a custom keybinding that runs `nina chat`.
+"""A global keyboard shortcut that opens the chat. GNOME only: it registers a custom keybinding that runs `nina open`.
 
 Qt cannot grab keys globally on X11/XWayland without extra dependencies, and a desktop-level binding also works on
 Wayland, so the desktop does the grabbing and NINA only answers the command.
@@ -13,11 +13,11 @@ ITEM_SCHEMA = SCHEMA + ".custom-keybinding"
 BASE = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/"
 SLUG = "nina-chat"
 PATH = f"{BASE}{SLUG}/"
-DEFAULT_KEYS = "<Super>n"
+DEFAULT_KEYS = "<Super><Shift>n"      # plain <Super>n is GNOME's "focus the active notification"
 
 
 def default_command() -> str:
-    return f"{shlex.quote(sys.executable)} -m nina chat"
+    return f"{shlex.quote(sys.executable)} -m nina open"
 
 
 def _gsettings(*args: str, run=subprocess.run) -> str:

@@ -51,7 +51,7 @@ and `nina --uninstall-hooks` removes only NINA's entries. Start a new `claude` s
 
 ![The right-click menu](docs/images/menu.png)
 
-She falls asleep after 10 idle minutes. From a terminal: `nina say "text"`, `nina happy`, `nina show`, `nina sleep`, `nina chat`, `nina ask "text"` talk to the running instance.
+She falls asleep after 10 idle minutes. From a terminal: `nina say "text"`, `nina happy`, `nina show`, `nina sleep`, `nina chat`, `nina open`, `nina ask "text"` talk to the running instance.
 
 ### Mascot states
 
@@ -125,9 +125,9 @@ The window is frameless (drag the header, resize from the bottom-right corner) a
 **Auto mode** (menu ⋮ → "Auto mode"): read-only shell commands (`ls`, `grep`, `git log`, `ssh host "psql -c 'select ...'"`, pipes of those) run without asking; anything else still asks. The sheet then also offers **Allow always**, which saves a rule in `~/.config/nina/auto-rules.json` for that command and operation (`ssh server` + `UPDATE` allows any `UPDATE` there, but a `DELETE` still asks). Never saved: `UPDATE`/`DELETE` without `WHERE`, redirects to a file, `sudo`, and commands that cannot be parsed. Remove a rule in the menu → "Forget a saved rule".
 Set `"chat_role"` in `config.json` to use another role (for example your own `~/.config/nina/roles/<id>.md`).
 
-For a **global shortcut** on GNOME run `nina --install-shortcut` (default `<Super>n`; `nina --install-shortcut "<Ctrl><Alt>n"` for another one;
-`nina --uninstall-shortcut` removes it). It registers a custom keybinding that runs `nina chat`; the desktop grabs the keys, so it also works on Wayland.
-If NINA runs as a different user than your desktop session, pass the command that reaches her: `--command "sudo -n env XDG_RUNTIME_DIR=/run/user/0 /path/to/nina chat"`.
+For a **global shortcut** on GNOME run `nina --install-shortcut` (default `<Super><Shift>n`, because plain `<Super>n` is GNOME's "focus the active notification"; `nina --install-shortcut "<Ctrl><Alt>n"` for another one;
+`nina --uninstall-shortcut` removes it). It registers a custom keybinding that runs `nina open`: it opens or closes the chat, and **starts NINA first when she is closed** (through her `nina.service` if there is one, otherwise as a new process); the desktop grabs the keys, so it also works on Wayland.
+If NINA runs as root inside your session (a system service), starting her asks for your password through `pkexec`, and an open NINA is reached through a restricted socket in `/run/user/<uid>/` that only you can use and that only understands `chat` and `show`.
 
 ### Accounts and profiles
 

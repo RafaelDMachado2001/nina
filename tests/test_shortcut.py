@@ -41,8 +41,8 @@ class ShortcutTest(unittest.TestCase):
         self.assertEqual(shortcut._parse_list(g.store[(shortcut.SCHEMA, "custom-keybindings")]), [other])
         self.assertFalse(shortcut.uninstall(run=g))
 
-    def test_default_command_runs_nina_chat_with_this_python(self):
-        self.assertTrue(shortcut.default_command().endswith("-m nina chat"))
+    def test_default_command_runs_nina_open_with_this_python(self):
+        self.assertTrue(shortcut.default_command().endswith("-m nina open"))
 
     def test_missing_gsettings_is_a_clear_error(self):
         def boom(cmd, **kw):
