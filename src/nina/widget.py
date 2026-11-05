@@ -10,7 +10,7 @@ from PySide6.QtCore import QPoint, QPointF, QProcess, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QWidget
 
-from nina import claude_hooks, config, launcher, plugins
+from nina import autoapprove, claude_hooks, config, launcher, plugins
 from nina.config import APP_NAME
 from nina.i18n import N_, _
 from nina.sprites import FRAMES, GRID_H, GRID_W, PALETTE, render_frame
@@ -636,7 +636,7 @@ class Nina(QWidget):
 
     def make_chat_controller(self, tab_id: str):
         ctrl = chat.ChatController(lambda: {**self.managed_context(), "chat_role": self.cfg.get("chat_role", "")},
-                                   path=chat.tab_state_path(tab_id), parent=self, tab_id=tab_id)
+                                   path=chat.tab_state_path(tab_id), parent=self, tab_id=tab_id, auto=self.auto_mode())
         ctrl.attention.connect(lambda text: self.say(text, 4))
         ctrl.state_changed.connect(lambda state, c=ctrl: self.on_chat_state(c, state))
         ctrl.message.connect(lambda *_a, c=ctrl: self.on_chat_activity(c))
@@ -644,6 +644,17 @@ class Nina(QWidget):
         ctrl.permission_asked.connect(lambda req, c=ctrl: self.on_chat_permission(c, req))
         ctrl.permission_cleared.connect(lambda c=ctrl: self.on_chat_state(c, c.status))
         return ctrl
+
+    def auto_mode(self):
+        """The auto mode switch and saved rules, shared by every chat."""
+        if getattr(self, "_auto_mode", None) is None:
+            self._auto_mode = autoapprove.AutoMode(bool(self.cfg.get("chat_auto", False)), autoapprove.Rules(),
+                                                   self.save_chat_auto)
+        return self._auto_mode
+
+    def save_chat_auto(self, enabled: bool) -> None:
+        self.cfg["chat_auto"] = enabled
+        config.save_config(self.cfg)
 
     def save_chat_theme(self, theme: str) -> None:
         self.cfg["chat_theme"] = theme

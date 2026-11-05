@@ -222,6 +222,59 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(self.wait_for("denied")["tool"], "Write")
         self.assertEqual(len([k for k, _ in self.kinds() if k == "permission"]), 2)   # the policy denial never asked
 
+    def test_auto_mode_lets_reads_through_and_asks_for_the_rest(self):
+        from nina import autoapprove
+        sdk = self.sdk
+        outcomes = {}
+        rules = autoapprove.Rules(Path(self.cwd) / "rules.json")
+        auto = autoapprove.AutoMode(True, rules)
+        update = "ssh servidor \"psql -c 'update t set a=1 where id=2'\""
+
+        async def script(client):
+            can = client.options.can_use_tool
+            outcomes["read"] = await can("Bash", {"command": "ls -la | grep x"}, None)
+            outcomes["update"] = await can("Bash", {"command": update}, None)
+            outcomes["again"] = await can("Bash", {"command": update.replace("a=1", "a=7")}, None)
+            outcomes["delete"] = await can("Bash", {"command": update.replace("update t set a=1", "delete from t")}, None)
+            outcomes["nowhere"] = await can("Bash", {"command": "psql -c 'delete from t'"}, None)
+            yield self.result()
+
+        self.make(script)
+        self.runner.auto = auto
+        self.runner.start(roles.load_roles()["general"], self.cwd, "x")
+        p1 = self.wait_for("permission", lambda p: "UPDATE" in " ".join(p["remember"]))
+        self.assertEqual(p1["remember"], ["ssh servidor · UPDATE"])
+        self.runner.resolve(p1["req"], True, "", True)                    # Allow always
+        p2 = self.wait_for("permission", lambda p: "DELETE" in " ".join(p["remember"]))
+        self.assertEqual(p2["remember"], ["ssh servidor · DELETE"])
+        self.runner.resolve(p2["req"], True)                              # only this time
+        p3 = self.wait_for("permission", lambda p: p["detail"].endswith("\n\npsql -c 'delete from t'"))
+        self.assertEqual(p3["remember"], [])                              # without WHERE: never remembered
+        self.runner.resolve(p3["req"], True, "", True)
+        self.wait_for("result")
+        for key in ("read", "update", "again", "delete", "nowhere"):
+            self.assertIsInstance(outcomes[key], sdk.PermissionResultAllow, key)
+        self.assertEqual(rules.all(), [("ssh servidor", "UPDATE")])
+        self.assertEqual(len([k for k, _ in self.kinds() if k == "permission"]), 3)
+
+    def test_auto_mode_off_asks_for_every_command(self):
+        from nina import autoapprove
+        outcomes = {}
+        auto = autoapprove.AutoMode(False, autoapprove.Rules(Path(self.cwd) / "rules.json"))
+
+        async def script(client):
+            outcomes["ls"] = await client.options.can_use_tool("Bash", {"command": "ls"}, None)
+            yield self.result()
+
+        self.make(script)
+        self.runner.auto = auto
+        self.runner.start(roles.load_roles()["general"], self.cwd, "x")
+        p = self.wait_for("permission")
+        self.assertEqual(p["remember"], [])
+        self.runner.resolve(p["req"], False, "no")
+        self.wait_for("result")
+        self.assertIsInstance(outcomes["ls"], self.sdk.PermissionResultDeny)
+
     def test_interrupt(self):
         async def script(client):
             await asyncio.sleep(0.2)

@@ -24,8 +24,8 @@ class FakeRunner:
     def interrupt(self, agent_id):
         self.interrupted.append(agent_id)
 
-    def resolve(self, req, ok, message=""):
-        self.resolved.append((req, ok))
+    def resolve(self, req, ok, message="", always=False):
+        self.resolved.append((req, ok, True) if always else (req, ok))
 
     def shutdown(self):
         pass
@@ -175,6 +175,17 @@ class ChatPermissionTest(ChatControllerTest):
         self.assertIsNone(c.current_req)
         self.assertIn(("info", "Allowed: Bash"), self.messages)
         self.assertIn(("info", "Denied: Edit"), self.messages)
+
+    def test_allow_always_is_only_sent_when_the_request_offers_it(self):
+        c = self.make()
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "Bash", "detail": "x",
+                                             "remember": ["ssh servidor · UPDATE"]})
+        c.on_event("agent-1", "permission", {"req": "r2", "tool": "Bash", "detail": "y", "remember": []})
+        c.answer(True, always=True)
+        c.answer(True, always=True)
+        self.assertEqual(self.runner.resolved, [("r1", True, True), ("r2", True)])
+        self.assertIn(("info", "Allowed always: ssh servidor · UPDATE"), self.messages)
 
     def test_answer_without_a_request_does_nothing(self):
         c = self.make()
@@ -416,6 +427,25 @@ class ChatBoxTest(IsolatedHome):
         c.on_event("agent-1", "permission", {"req": "rp", "tool": "Bash", "detail": "ls"})
         box.allow_shortcut()
         self.assertEqual(self.runner.resolved[-1], ("rp", True))
+
+    def test_allow_always_button_and_auto_mode_switch(self):
+        from nina import autoapprove
+        c, box = self.make()
+        c.auto = autoapprove.AutoMode(False, autoapprove.Rules(self.home / "rules.json"))
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "Bash", "detail": "plain"})
+        self.assertFalse(box.always_btn.isVisibleTo(box.sheet))
+        c.answer(True)
+        c.on_event("agent-1", "permission", {"req": "r2", "tool": "Bash", "detail": "upd",
+                                             "remember": ["ssh servidor · UPDATE"]})
+        self.assertTrue(box.always_btn.isVisibleTo(box.sheet))
+        self.assertIn("ssh servidor · UPDATE", box.perm_remember.text())
+        box.always_btn.click()
+        self.assertEqual(self.runner.resolved[-1], ("r2", True, True))
+        self.assertNotIn("auto", box.status.text())
+        box.set_auto(True)
+        self.assertTrue(c.auto.enabled())
+        self.assertTrue(box.status.text().endswith("· auto"))
 
     def test_permission_request_opens_a_hidden_window(self):
         c, box = self.make()

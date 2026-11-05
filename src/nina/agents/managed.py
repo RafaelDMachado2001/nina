@@ -104,6 +104,8 @@ class Runner:
         self.factory = client_factory or (lambda options: sdk.ClaudeSDKClient(options))
         self.agents = {}
         self.pending = {}            # req_id -> asyncio.Future
+        self.remember = {}           # req_id -> the auto mode steps "Allow always" would save
+        self.auto = None             # an autoapprove.AutoMode: read-only Bash runs without asking while it is on
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._main, name="nina-managed", daemon=True)
         self.thread.start()
@@ -141,8 +143,8 @@ class Runner:
         if agent is not None:
             self.loop.call_soon_threadsafe(self._stop, agent)
 
-    def resolve(self, req_id: str, allow: bool, message: str = "") -> None:
-        self.loop.call_soon_threadsafe(self._resolve, req_id, allow, message)
+    def resolve(self, req_id: str, allow: bool, message: str = "", always: bool = False) -> None:
+        self.loop.call_soon_threadsafe(self._resolve, req_id, allow, message, always)
 
     def shutdown(self) -> None:
         """Stop every agent and wait (up to 3 s) for them to exit before stopping the loop."""
@@ -167,16 +169,16 @@ class Runner:
 
     def _stop(self, agent: _Agent) -> None:
         for req in list(agent.pending):
-            self._resolve(req, False, _("Agent closed."))
+            self._resolve(req, False, _("Agent closed."), False)
         if agent.queue is not None:
             agent.queue.put_nowait(None)
         if agent.task is not None and not agent.task.done():
             self.loop.call_later(5, agent.task.cancel)    # force-stop if it does not exit by itself
 
-    def _resolve(self, req_id: str, allow: bool, message: str) -> None:
+    def _resolve(self, req_id: str, allow: bool, message: str, always: bool = False) -> None:
         fut = self.pending.get(req_id)
         if fut is not None and not fut.done():
-            fut.set_result((allow, message))
+            fut.set_result((allow, message, always))
 
     async def _interrupt(self, agent: _Agent) -> None:
         if agent.client is not None:
@@ -263,18 +265,30 @@ class Runner:
         if verdict == "deny":
             self.emit(agent.id, "denied", {"tool": tool, "why": why})
             return sdk.PermissionResultDeny(message=why)
+        steps = []
+        if tool == "Bash" and self.auto is not None and self.auto.enabled():
+            steps = self.auto.pending(str(tool_input.get("command", "")))
+            if not steps:
+                return sdk.PermissionResultAllow()      # auto mode: it only reads, or you already allowed it always
         req = uuid.uuid4().hex
         fut = self.loop.create_future()
         self.pending[req] = fut
         agent.pending.add(req)
-        self.emit(agent.id, "permission", {"req": req, "tool": tool, "detail": describe(tool, tool_input)})
+        offer = steps if steps and not any(s.hard for s in steps) else []
+        if offer:
+            self.remember[req] = offer
+        self.emit(agent.id, "permission", {"req": req, "tool": tool, "detail": describe(tool, tool_input),
+                                           "remember": [s.label for s in offer]})
         try:
-            allow, message = await asyncio.wait_for(fut, PERMISSION_TIMEOUT_S)
+            allow, message, always = await asyncio.wait_for(fut, PERMISSION_TIMEOUT_S)
         except asyncio.TimeoutError:
-            allow, message = False, _("No answer from the user in time.")
+            allow, message, always = False, _("No answer from the user in time."), False
         finally:
             self.pending.pop(req, None)
             agent.pending.discard(req)
+        remembered = self.remember.pop(req, [])
         if allow:
+            if always and remembered and self.auto is not None:
+                self.auto.rules.add(remembered)
             return sdk.PermissionResultAllow()
         return sdk.PermissionResultDeny(message=message or _("Denied by the user."))

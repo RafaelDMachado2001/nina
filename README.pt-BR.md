@@ -125,6 +125,8 @@ Dê um duplo clique nela (ou botão direito → **Conversar com a NINA...**, ou 
 Por trás há um agente gerenciado persistente (o papel **Assistente geral**, na sua pasta padrão e conta ativa): a conversa **continua entre execuções**,
 **Nova conversa** (`Ctrl+N`) abre outro chat em uma aba (cada um tem seu agente e podem trabalhar ao mesmo tempo), o botão de conta no cabeçalho escolhe a conta do Claude daquele chat, e ela mostra os mesmos estados de qualquer agente (shuriken girando enquanto pensa, o alerta quando precisa de você).
 Leituras são pré-aprovadas; toda escrita ou comando pede **Permitir / Negar**. A janela não tem moldura (arraste pelo cabeçalho, redimensione pelo canto inferior direito) e tem tema escuro e claro (menu ⋮); `Ctrl+N` inicia uma nova conversa e a folha de permissão responde **Negar** a `Enter`/`Esc` e **Permitir** a `Alt+P`.
+
+**Modo automático** (menu ⋮ → "Modo automático"): comandos de shell só de leitura (`ls`, `grep`, `git log`, `ssh servidor "psql -c 'select ...'"`, pipes desses) rodam sem perguntar; o resto continua perguntando. A folha passa a oferecer **Permitir sempre**, que salva uma regra em `~/.config/nina/auto-rules.json` para aquele comando e operação (`ssh servidor` + `UPDATE` libera qualquer `UPDATE` ali, mas um `DELETE` ainda pergunta). Nunca são salvos: `UPDATE`/`DELETE` sem `WHERE`, redirecionamento para arquivo, `sudo` e comandos que não dá para interpretar. Para apagar uma regra: menu → "Esquecer uma regra salva".
 Use `"chat_role"` no `config.json` para outro papel.
 
 Para um **atalho global** no GNOME rode `nina --install-shortcut` (padrão `<Super>n`; `nina --uninstall-shortcut` remove). Ele registra um atalho

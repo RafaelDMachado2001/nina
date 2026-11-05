@@ -122,6 +122,7 @@ Behind it is one persistent managed agent (the **General assistant** role, in yo
 the conversation **continues between runs**, **New chat** (`Ctrl+N`) opens another chat in a tab (each one has its own agent and can run at the same time), the account chip in the header picks the Claude account of that chat, and she shows the same states as for any agent
 (a spinning shuriken while it thinks, the permission alert when it needs you). Reads are pre-approved; every write or command asks **Allow / Deny**.
 The window is frameless (drag the header, resize from the bottom-right corner) and has a dark and a light theme (menu ⋮); `Ctrl+N` starts a new chat and the permission sheet answers **Deny** to `Enter`/`Esc` and **Allow** to `Alt+P`.
+**Auto mode** (menu ⋮ → "Auto mode"): read-only shell commands (`ls`, `grep`, `git log`, `ssh host "psql -c 'select ...'"`, pipes of those) run without asking; anything else still asks. The sheet then also offers **Allow always**, which saves a rule in `~/.config/nina/auto-rules.json` for that command and operation (`ssh server` + `UPDATE` allows any `UPDATE` there, but a `DELETE` still asks). Never saved: `UPDATE`/`DELETE` without `WHERE`, redirects to a file, `sudo`, and commands that cannot be parsed. Remove a rule in the menu → "Forget a saved rule".
 Set `"chat_role"` in `config.json` to use another role (for example your own `~/.config/nina/roles/<id>.md`).
 
 For a **global shortcut** on GNOME run `nina --install-shortcut` (default `<Super>n`; `nina --install-shortcut "<Ctrl><Alt>n"` for another one;

@@ -118,16 +118,19 @@ class ChatController(QObject):
     message = Signal(str, str)        # kind (user|assistant|tool|denied|error|info), text
     state_changed = Signal(str)       # none | starting | working | idle | closed | error
     attention = Signal(str)           # short text for the mascot to say (permission requests)
-    permission_asked = Signal(dict)   # {"req", "tool", "detail"}: the window shows Allow / Deny
+    permission_asked = Signal(dict)   # {"req", "tool", "detail", "remember"}: the window shows Allow / Deny
     permission_cleared = Signal()
     account_changed = Signal()
     finished = Signal()               # an answer is complete
     _event = Signal(str, str, object)   # from the Runner's thread, delivered on the UI thread
 
-    def __init__(self, context, runner_factory=None, path: Path | None = None, parent=None, tab_id: str = "main"):
-        """`context()` returns the same dict as the managed tab, plus an optional "chat_role"."""
+    def __init__(self, context, runner_factory=None, path: Path | None = None, parent=None, tab_id: str = "main",
+                 auto=None):
+        """`context()` returns the same dict as the managed tab, plus an optional "chat_role". `auto` is the shared
+        autoapprove.AutoMode (read-only commands run without asking while it is on)."""
         super().__init__(parent)
         self.tab_id = tab_id
+        self.auto = auto
         self.account = None               # None follows the default account (the mascot's menu); otherwise this chat's own
         self.context = context
         self.path = path
@@ -191,6 +194,7 @@ class ChatController(QObject):
         ctx = self.context()
         if self.runner is None:
             self.runner = self.runner_factory(self._event.emit, managed.find_claude_bin(ctx.get("claude_bin", "")))
+            self.runner.auto = self.auto
         account = self.effective_account()
         config_dir = None
         if account and (Path(ctx["accounts_root"]) / account).is_dir():
@@ -281,12 +285,17 @@ class ChatController(QObject):
         self.attention.emit(_("I need your permission!"))
         self.permission_asked.emit(self.current_req)
 
-    def answer(self, allow: bool) -> None:
+    def answer(self, allow: bool, always: bool = False) -> None:
+        """`always` (only with a request that offers it) also saves the auto mode rule, so it stops asking."""
         req, self.current_req = self.current_req, None
         if req is None:
             return
-        self.runner.resolve(req["req"], allow, "" if allow else _("Denied by the user."))
-        self.message.emit("info", (_("Allowed") if allow else _("Denied")) + f": {req['tool']}")
+        always = bool(always and allow and req.get("remember"))
+        self.runner.resolve(req["req"], allow, "" if allow else _("Denied by the user."), always)
+        if always:
+            self.message.emit("info", _("Allowed always: {rules}", rules=", ".join(req["remember"])))
+        else:
+            self.message.emit("info", (_("Allowed") if allow else _("Denied")) + f": {req['tool']}")
         self.permission_cleared.emit()
         self.ask_next()
 
@@ -598,6 +607,13 @@ class ChatBox(QWidget):
         self.allow_btn.setFixedHeight(36)
         self.allow_btn.setToolTip("Alt+P")
         self.allow_btn.clicked.connect(lambda: self.controller.answer(True))
+        self.always_btn = QPushButton(_("Allow always"))
+        self.always_btn.setObjectName("Allow")
+        self.always_btn.setFixedHeight(36)
+        self.always_btn.clicked.connect(lambda: self.controller.answer(True, always=True))
+        self.perm_remember = QLabel("")
+        self.perm_remember.setObjectName("PermWhere")
+        self.perm_remember.setWordWrap(True)
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
         title_row.addWidget(self.perm_icon)
@@ -606,6 +622,7 @@ class ChatBox(QWidget):
         buttons.setSpacing(8)
         buttons.addWidget(self.deny_btn)
         buttons.addWidget(self.allow_btn)
+        buttons.addWidget(self.always_btn)
         buttons.addStretch(1)
         sheet_layout = QVBoxLayout(self.sheet)
         sheet_layout.setContentsMargins(12, 12, 12, 12)
@@ -613,6 +630,7 @@ class ChatBox(QWidget):
         sheet_layout.addLayout(title_row)
         sheet_layout.addWidget(self.perm_command)
         sheet_layout.addWidget(self.perm_where)
+        sheet_layout.addWidget(self.perm_remember)
         sheet_layout.addLayout(buttons)
 
         layout = QVBoxLayout(self)
@@ -847,11 +865,29 @@ class ChatBox(QWidget):
         menu.addSeparator()
         for mode, label in (("normal", _("Normal size")), ("large", _("Large size")), ("maximized", _("Maximize"))):
             menu.addAction(label).triggered.connect(lambda _c=False, m=mode: self.set_size_mode(m))
+        auto = self.controller.auto
+        if auto is not None:
+            menu.addSeparator()
+            toggle = menu.addAction(_("Auto mode: read commands without asking"))
+            toggle.setCheckable(True)
+            toggle.setChecked(auto.enabled())
+            toggle.triggered.connect(lambda checked: self.set_auto(checked))
+            saved = auto.rules.all()
+            forget = menu.addMenu(_("Forget a saved rule"))
+            if not saved:
+                forget.addAction(_("No saved rules")).setEnabled(False)
+            for prefix, op in saved:
+                forget.addAction(f"{prefix} · {op}").triggered.connect(
+                    lambda _c=False, prefix=prefix, op=op: auto.rules.remove(prefix, op))
         menu.addSeparator()
         other = "light" if self.theme == "dark" else "dark"
         menu.addAction(_("Light theme") if other == "light" else _("Dark theme")).triggered.connect(
             lambda: self.set_theme(other))
         menu.exec(self.menu_btn.mapToGlobal(QPoint(0, self.menu_btn.height())))
+
+    def set_auto(self, enabled: bool) -> None:
+        self.controller.auto.set_enabled(enabled)
+        self.refresh_state()
 
     # ---- messages ----------------------------------------------------------------------------------
     def on_message(self, kind: str, text: str, tab: ChatTab | None = None) -> None:
@@ -916,8 +952,9 @@ class ChatBox(QWidget):
     def refresh_state(self) -> None:
         t = chat_theme.tokens(self.theme)
         key = self.status_key()
+        auto = self.controller.auto is not None and self.controller.auto.enabled()
         self.status.setText({"ready": _("ready"), "thinking": _("thinking"), "perm": _("needs permission"),
-                             "error": _("error")}[key])
+                             "error": _("error")}[key] + (" · " + _("auto") if auto else ""))
         self.dot.set_color({"ready": t["accent"], "thinking": t["indigo"], "perm": t["warn"], "error": t["err_text"]}[key])
         busy = self.controller.busy
         asking = self.controller.current_req is not None
@@ -955,6 +992,10 @@ class ChatBox(QWidget):
         self.perm_command.setText(str(req.get("detail", ""))[:900])
         where = (self.controller.context() or {}).get("default_dir", "")
         self.perm_where.setText(_("in {where}", where=config.short_path(where)) if where else "")
+        remember = req.get("remember") or []
+        self.always_btn.setVisible(bool(remember))
+        self.perm_remember.setVisible(bool(remember))
+        self.perm_remember.setText(_("Allow always saves: {rules}", rules=", ".join(remember)) if remember else "")
         self.refresh_state()
 
     def allow_shortcut(self) -> None:
