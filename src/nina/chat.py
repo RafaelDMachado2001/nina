@@ -7,6 +7,7 @@ dialog, exactly like the other managed agents.
 """
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QSizeGrip,
     QSizePolicy,
     QStackedWidget,
+    QTabBar,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -63,6 +65,52 @@ def save_saved(data: dict, path: Path | None = None) -> None:
         pass
 
 
+def tab_state_path(tab_id: str) -> Path:
+    """Where one chat keeps its Claude session id. The first chat ("main") keeps the old chat.json."""
+    return state_path() if tab_id == "main" else state_path().with_name(f"chat-{tab_id}.json")
+
+
+def tabs_state_path() -> Path:
+    return state_path().with_name("chats.json")
+
+
+def load_tabs(path: Path | None = None) -> dict:
+    """The open chats: {"tabs": [{"id", "title"}, ...], "active": id}. Empty when nothing valid was saved."""
+    try:
+        data = json.loads((path or tabs_state_path()).read_text())
+    except (OSError, ValueError):
+        return {}
+    tabs, seen = [], set()
+    for t in data.get("tabs", []) if isinstance(data, dict) else []:
+        tid = t.get("id") if isinstance(t, dict) else None
+        if isinstance(tid, str) and re.fullmatch(r"[0-9a-z]{1,16}", tid) and tid not in seen:
+            seen.add(tid)
+            tabs.append({"id": tid, "title": str(t.get("title") or "")[:60]})
+    return {"tabs": tabs, "active": data.get("active")} if tabs else {}
+
+
+def save_tabs(data: dict, path: Path | None = None) -> None:
+    target = path or tabs_state_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        os.chmod(tmp, 0o600)
+        tmp.replace(target)
+    except OSError:
+        pass
+
+
+def new_tab_id() -> str:
+    return format(int(time.time() * 1000), "x")
+
+
+def title_from(text: str, limit: int = 24) -> str:
+    """A short tab title taken from the first message."""
+    line = " ".join((text or "").split())
+    return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+
+
 class ChatController(QObject):
     """One persistent conversation. The UI thread talks to it; the agent runs on the Runner's own thread."""
     message = Signal(str, str)        # kind (user|assistant|tool|denied|error|info), text
@@ -73,9 +121,10 @@ class ChatController(QObject):
     finished = Signal()               # an answer is complete
     _event = Signal(str, str, object)   # from the Runner's thread, delivered on the UI thread
 
-    def __init__(self, context, runner_factory=None, path: Path | None = None, parent=None):
+    def __init__(self, context, runner_factory=None, path: Path | None = None, parent=None, tab_id: str = "main"):
         """`context()` returns the same dict as the managed tab, plus an optional "chat_role"."""
         super().__init__(parent)
+        self.tab_id = tab_id
         self.context = context
         self.path = path
         self.runner_factory = runner_factory or (lambda emit, claude_bin: managed.Runner(emit, claude_bin))
@@ -227,7 +276,7 @@ def make_icon(kind: str, color: str, size: int = 16) -> QIcon:
     p.setRenderHint(QPainter.Antialiasing)
     p.scale(size * 2 / 24, size * 2 / 24)
     pen = QPen(QColor(color), 2.4 if kind != "shield" else 2)
-    pen.setCapStyle(Qt.RoundCap if kind in ("dots", "close") else Qt.SquareCap)
+    pen.setCapStyle(Qt.RoundCap if kind in ("dots", "close", "plus") else Qt.SquareCap)
     pen.setJoinStyle(Qt.MiterJoin)
     p.setPen(pen)
     if kind == "dots":
@@ -237,6 +286,17 @@ def make_icon(kind: str, color: str, size: int = 16) -> QIcon:
     elif kind == "close":
         p.drawLine(6, 6, 18, 18)
         p.drawLine(18, 6, 6, 18)
+    elif kind == "expand":
+        p.drawPolyline([QPointF(4, 9), QPointF(4, 4), QPointF(9, 4)])
+        p.drawPolyline([QPointF(20, 15), QPointF(20, 20), QPointF(15, 20)])
+        p.drawLine(4, 4, 10, 10)
+        p.drawLine(20, 20, 14, 14)
+    elif kind == "plus":
+        p.drawLine(12, 5, 12, 19)
+        p.drawLine(5, 12, 19, 12)
+    elif kind == "restore":
+        p.drawRect(4, 8, 12, 12)
+        p.drawPolyline([QPointF(8, 8), QPointF(8, 4), QPointF(20, 4), QPointF(20, 16), QPointF(16, 16)])
     elif kind == "send":
         p.drawLine(12, 19, 12, 5)
         p.drawLine(5, 12, 12, 5)
@@ -336,27 +396,53 @@ class DragHeader(QWidget):
     """Header bar: dragging it moves the frameless window."""
     def mousePressEvent(self, e) -> None:
         handle = self.window().windowHandle()
-        if e.button() == Qt.LeftButton and handle is not None:
+        if e.button() == Qt.LeftButton and handle is not None and self.window().size_mode != "maximized":
             handle.startSystemMove()
         super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.window().toggle_maximized()
+        super().mouseDoubleClickEvent(e)
+
+
+class ChatTab:
+    """One open chat: its controller, the messages shown for it, and the text typed but not sent yet."""
+    def __init__(self, controller: "ChatController", title: str = ""):
+        self.controller = controller
+        self.title = title
+        self.entries = []                     # (kind, text), kept to re-render when the theme or the tab changes
+        self.draft = ""
+        self.attention = False                # a background chat needs a permission answer
+        self.close_btn = None
 
 
 class ChatBox(QWidget):
     """The frameless chat window: header, messages (or the empty state), thinking indicator and composer
     (replaced by the permission sheet while the agent waits for you)."""
     MIN_W, MIN_H = 360, 420
+    SIZES = {"normal": (400, 520), "large": (680, 800)}   # "normal" is the default; "maximized" fills the screen
 
-    def __init__(self, controller: ChatController, theme: str = "dark", on_theme=None):
+    def __init__(self, controller: ChatController, theme: str = "dark", on_theme=None, factory=None, saved=None,
+                 tabs_path: Path | None = None):
+        """`factory(tab_id)` builds the controller of a new chat; `saved` is `load_tabs()` of the last run."""
         super().__init__()
-        self.controller = controller
+        self.controller = controller          # the chat on screen
+        self.factory = factory
+        self.tabs_path = tabs_path
         self.theme = theme if theme in chat_theme.THEMES else "dark"
         self.on_theme = on_theme
-        self.entries = []                     # (kind, text), kept to re-render when the theme changes
+        first = ChatTab(controller)
+        self.tabs = [first]
+        self.current = first
+        self.entries = first.entries
         self.setObjectName("ChatWindow")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setWindowTitle(_("Talk to NINA"))
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.resize(400, 520)
+        self.size_mode = "normal"
+        self.size_before_max = None            # geometry to go back to when leaving "maximized"
+        self.resize(*self.SIZES["normal"])
         self.setMinimumSize(self.MIN_W, self.MIN_H)
 
         # header
@@ -373,6 +459,8 @@ class ChatBox(QWidget):
         self.status = QLabel("")
         self.status.setObjectName("StatusLabel")
         self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.size_btn = self.icon_button(_("Maximize"))
+        self.size_btn.clicked.connect(self.toggle_maximized)
         self.menu_btn = self.icon_button(_("Menu"))
         self.menu_btn.clicked.connect(self.open_menu)
         self.close_btn = self.icon_button(_("Close"))
@@ -385,6 +473,7 @@ class ChatBox(QWidget):
         hl.addSpacing(-2)
         hl.addWidget(self.dot)
         hl.addWidget(self.status, 1)
+        hl.addWidget(self.size_btn)
         hl.addWidget(self.menu_btn)
         hl.addWidget(self.close_btn)
 
@@ -421,7 +510,7 @@ class ChatBox(QWidget):
             b = QPushButton(text)
             b.setObjectName("Suggestion")
             b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _=False, text=text: controller.ask(text))
+            b.clicked.connect(lambda _=False, text=text: self.controller.ask(text))
             self.suggestions.append(b)
             sl.addWidget(b)
         el.addLayout(sl)
@@ -442,7 +531,7 @@ class ChatBox(QWidget):
         self.stop_btn = QPushButton(_("Interrupt"))
         self.stop_btn.setObjectName("Interrupt")
         self.stop_btn.setFixedHeight(36)
-        self.stop_btn.clicked.connect(controller.interrupt)
+        self.stop_btn.clicked.connect(lambda: self.controller.interrupt())
         self.send_btn = QPushButton()
         self.send_btn.setObjectName("Send")
         self.send_btn.setToolTip(_("Send"))
@@ -469,12 +558,12 @@ class ChatBox(QWidget):
         self.deny_btn = QPushButton(_("Deny"))
         self.deny_btn.setObjectName("Deny")
         self.deny_btn.setFixedHeight(36)
-        self.deny_btn.clicked.connect(lambda: controller.answer(False))
+        self.deny_btn.clicked.connect(lambda: self.controller.answer(False))
         self.allow_btn = QPushButton(_("Allow"))
         self.allow_btn.setObjectName("Allow")
         self.allow_btn.setFixedHeight(36)
         self.allow_btn.setToolTip("Alt+P")
-        self.allow_btn.clicked.connect(lambda: controller.answer(True))
+        self.allow_btn.clicked.connect(lambda: self.controller.answer(True))
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
         title_row.addWidget(self.perm_icon)
@@ -495,7 +584,28 @@ class ChatBox(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
+        self.tabbar = QTabBar()
+        self.tabbar.setExpanding(False)
+        self.tabbar.setDrawBase(False)
+        self.tabbar.setUsesScrollButtons(True)
+        self.tabbar.setElideMode(Qt.ElideRight)
+        self.tabbar.setFocusPolicy(Qt.NoFocus)
+        self.tabbar.setIconSize(QSize(8, 8))
+        self.tabbar.currentChanged.connect(self.on_tab_changed)
+        self.add_btn = self.icon_button(_("New chat"))
+        self.add_btn.clicked.connect(self.new_tab)
+        self.tabrow = QWidget()
+        self.tabrow.setObjectName("TabRow")
+        self.tabrow.setAttribute(Qt.WA_StyledBackground, True)
+        tl = QHBoxLayout(self.tabrow)
+        tl.setContentsMargins(4, 0, 4, 0)
+        tl.setSpacing(4)
+        tl.addWidget(self.tabbar, 1)
+        tl.addWidget(self.add_btn)
+        self.tabrow.hide()                    # only shown once there are two chats
+
         layout.addWidget(self.header)
+        layout.addWidget(self.tabrow)
         layout.addWidget(self.body, 1)
         layout.addWidget(self.thinking)
         layout.addWidget(self.composer)
@@ -505,14 +615,156 @@ class ChatBox(QWidget):
         self.grip = QSizeGrip(self)                  # resize from the bottom-right corner
         self.grip.setFixedSize(14, 14)
         self.grip.setStyleSheet("background: transparent;")
-        QShortcut(QKeySequence("Ctrl+N"), self, activated=controller.reset)
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_tab)
+        QShortcut(QKeySequence("Ctrl+W"), self, activated=self.close_current)
         QShortcut(QKeySequence("Alt+P"), self, activated=self.allow_shortcut)
+        for keys, step in (("Ctrl+PgDown", 1), ("Ctrl+Tab", 1), ("Ctrl+PgUp", -1), ("Ctrl+Shift+Tab", -1)):
+            QShortcut(QKeySequence(keys), self, activated=lambda step=step: self.step_tab(step))
 
-        controller.message.connect(self.on_message)
-        controller.state_changed.connect(lambda _s: self.refresh_state())
-        controller.permission_asked.connect(self.on_permission)
-        controller.permission_cleared.connect(self.refresh_state)
+        self.attach(first)
+        self.tabbar.blockSignals(True)
+        self.tabbar.addTab("")
+        self.tabbar.blockSignals(False)
+        self.decorate(first)
         self.apply_theme(self.theme)
+        self.restore(saved or {})
+
+    # ---- chats (tabs) ------------------------------------------------------------------------------
+    def attach(self, tab: ChatTab) -> None:
+        """Listen to one chat for as long as it is open, also while another one is on screen."""
+        c = tab.controller
+        c.message.connect(lambda kind, text, tab=tab: self.on_message(kind, text, tab))
+        c.state_changed.connect(lambda _s, tab=tab: self.on_tab_state(tab))
+        c.permission_asked.connect(lambda req, tab=tab: self.on_permission(req, tab))
+        c.permission_cleared.connect(lambda tab=tab: self.on_tab_state(tab))
+
+    def restore(self, saved: dict) -> None:
+        """Reopen the chats of the last run (empty on screen, but each one resumes its Claude session)."""
+        entries = saved.get("tabs") or []
+        if not entries or entries[0]["id"] != getattr(self.controller, "tab_id", "main") or self.factory is None:
+            return
+        self.tabs[0].title = entries[0]["title"]
+        for e in entries[1:]:
+            self.add_tab(self.factory(e["id"]), e["title"], select=False)
+        by_id = {getattr(t.controller, "tab_id", ""): i for i, t in enumerate(self.tabs)}
+        self.decorate_all()
+        self.tabbar.setCurrentIndex(by_id.get(saved.get("active"), 0))
+
+    def add_tab(self, controller: ChatController, title: str = "", select: bool = True) -> ChatTab:
+        tab = ChatTab(controller, title)
+        self.tabs.append(tab)
+        self.attach(tab)
+        self.tabbar.blockSignals(True)
+        self.tabbar.addTab("")
+        self.tabbar.blockSignals(False)
+        self.decorate(tab)
+        self.tabrow.setVisible(len(self.tabs) > 1)
+        if select:
+            self.tabbar.setCurrentIndex(len(self.tabs) - 1)
+        self.save_tab_list()
+        return tab
+
+    def new_tab(self) -> None:
+        if self.factory is not None:
+            self.add_tab(self.factory(new_tab_id()))
+            self.input.setFocus()
+
+    def close_tab(self, tab: ChatTab) -> None:
+        """Close a chat: its agent stops and its saved session is forgotten. The last one is only cleared."""
+        c = tab.controller
+        c.reset()
+        if len(self.tabs) == 1:
+            return
+        i = self.tabs.index(tab)
+        c.shutdown()
+        was_current = tab is self.current
+        self.tabs.pop(i)
+        self.tabbar.blockSignals(True)
+        self.tabbar.removeTab(i)
+        self.tabbar.blockSignals(False)
+        self.tabrow.setVisible(len(self.tabs) > 1)
+        self.decorate_all()
+        if was_current:
+            self.select(self.tabs[min(i, len(self.tabs) - 1)])
+        self.save_tab_list()
+
+    def close_current(self) -> None:
+        self.close_tab(self.current)
+
+    def step_tab(self, step: int) -> None:
+        if len(self.tabs) > 1:
+            self.tabbar.setCurrentIndex((self.tabbar.currentIndex() + step) % len(self.tabs))
+
+    def on_tab_changed(self, i: int) -> None:
+        if 0 <= i < len(self.tabs):
+            self.select(self.tabs[i])
+
+    def select(self, tab: ChatTab) -> None:
+        """Bring a chat on screen: its messages, draft, permission request and state."""
+        if tab is not self.current and self.current in self.tabs:
+            self.current.draft = self.input.text()
+        self.current = tab
+        self.controller = tab.controller
+        self.entries = tab.entries
+        tab.attention = False
+        i = self.tabs.index(tab)
+        if self.tabbar.currentIndex() != i:
+            self.tabbar.blockSignals(True)
+            self.tabbar.setCurrentIndex(i)
+            self.tabbar.blockSignals(False)
+        self.input.setText(tab.draft)
+        self.render_all()
+        self.body.setCurrentWidget(self.log if tab.entries else self.empty)
+        if self.controller.current_req is not None:
+            self.fill_permission(self.controller.current_req)
+        self.decorate_all()
+        self.refresh_state()
+        self.save_tab_list()
+
+    def decorate_all(self) -> None:
+        for tab in self.tabs:
+            self.decorate(tab)
+
+    def decorate(self, tab: ChatTab) -> None:
+        """Tab text, the small state square on its left and its close button."""
+        if tab not in self.tabs or len(self.tabs) != self.tabbar.count():
+            return
+        i = self.tabs.index(tab)
+        t = chat_theme.tokens(self.theme)
+        c = tab.controller
+        if c.current_req is not None or tab.attention:
+            color = t["warn"]
+        elif c.status == "error":
+            color = t["err_text"]
+        elif c.busy:
+            color = t["indigo"]
+        else:
+            color = None
+        pm = QPixmap(8, 8)
+        pm.fill(QColor(color) if color else Qt.transparent)
+        self.tabbar.setTabIcon(i, QIcon(pm))
+        self.tabbar.setTabText(i, tab.title or _("New chat"))
+        self.tabbar.setTabToolTip(i, tab.title or _("New chat"))
+        if tab.close_btn is None:
+            tab.close_btn = self.icon_button(_("Close chat"))
+            tab.close_btn.setObjectName("TabClose")
+            tab.close_btn.clicked.connect(lambda _=False, tab=tab: self.close_tab(tab))
+        tab.close_btn.setIcon(make_icon("close", t["text2"], 12))
+        tab.close_btn.setIconSize(QSize(12, 12))
+        if self.tabbar.tabButton(i, QTabBar.RightSide) is not tab.close_btn:
+            self.tabbar.setTabButton(i, QTabBar.RightSide, tab.close_btn)
+        tab.close_btn.show()
+
+    def on_tab_state(self, tab: ChatTab) -> None:
+        self.decorate(tab)
+        if tab is self.current:
+            self.refresh_state()
+
+    def save_tab_list(self) -> None:
+        if self.factory is None:
+            return
+        save_tabs({"tabs": [{"id": getattr(t.controller, "tab_id", "main"), "title": t.title} for t in self.tabs],
+                   "active": getattr(self.controller, "tab_id", "main")}, self.tabs_path)
 
     # ---- theme -----------------------------------------------------------------------------------
     def icon_button(self, tip: str) -> QPushButton:
@@ -529,6 +781,9 @@ class ChatBox(QWidget):
         self.menu_btn.setIcon(make_icon("dots", t["text2"]))
         self.close_btn.setIcon(make_icon("close", t["text2"]))
         self.send_btn.setIcon(make_icon("send", t["on_accent"], 18))
+        self.add_btn.setIcon(make_icon("plus", t["text2"]))
+        self.decorate_all()
+        self.update_size_button()
         self.send_btn.setIconSize(QSize(18, 18))
         self.perm_icon.setPixmap(make_icon("shield", t["warn"]).pixmap(16, 16))
         for b in self.suggestions:
@@ -546,7 +801,14 @@ class ChatBox(QWidget):
         menu = QMenu(self)
         new = menu.addAction(_("New chat"))
         new.setShortcut(QKeySequence("Ctrl+N"))
-        new.triggered.connect(self.controller.reset)
+        new.triggered.connect(self.new_tab)
+        new.setEnabled(self.factory is not None)
+        close = menu.addAction(_("Close chat"))
+        close.setShortcut(QKeySequence("Ctrl+W"))
+        close.triggered.connect(self.close_current)
+        menu.addSeparator()
+        for mode, label in (("normal", _("Normal size")), ("large", _("Large size")), ("maximized", _("Maximize"))):
+            menu.addAction(label).triggered.connect(lambda _c=False, m=mode: self.set_size_mode(m))
         menu.addSeparator()
         other = "light" if self.theme == "dark" else "dark"
         menu.addAction(_("Light theme") if other == "light" else _("Dark theme")).triggered.connect(
@@ -554,15 +816,26 @@ class ChatBox(QWidget):
         menu.exec(self.menu_btn.mapToGlobal(QPoint(0, self.menu_btn.height())))
 
     # ---- messages ----------------------------------------------------------------------------------
-    def on_message(self, kind: str, text: str) -> None:
+    def on_message(self, kind: str, text: str, tab: ChatTab | None = None) -> None:
+        tab = tab or self.current
+        shown = tab is self.current
         if kind == "reset":
-            self.entries.clear()
-            self.log.clear()
-            self.body.setCurrentWidget(self.empty)
+            tab.entries.clear()
+            tab.title = ""
+            self.decorate(tab)
+            self.save_tab_list()
+            if shown:
+                self.log.clear()
+                self.body.setCurrentWidget(self.empty)
             return
-        self.entries.append((kind, text))
-        self.body.setCurrentWidget(self.log)
-        self.append(kind, text)
+        tab.entries.append((kind, text))
+        if kind == "user" and not tab.title:
+            tab.title = title_from(text)
+            self.decorate(tab)
+            self.save_tab_list()
+        if shown:
+            self.body.setCurrentWidget(self.log)
+            self.append(kind, text)
 
     def html_for(self, kind: str, text: str) -> str:
         th = self.theme
@@ -627,15 +900,23 @@ class ChatBox(QWidget):
         else:
             self.log.setFocus()            # keeps the focus ring off the header buttons while it works
 
-    def on_permission(self, req: dict) -> None:
+    def on_permission(self, req: dict, tab: ChatTab | None = None) -> None:
+        tab = tab or self.current
+        if tab is not self.current:
+            tab.attention = True                 # shown as a warning square on its tab until you open it
+            self.decorate(tab)
+        else:
+            self.fill_permission(req)
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+
+    def fill_permission(self, req: dict) -> None:
         self.perm_title.setText(_("NINA wants to use {tool}", tool=req["tool"]))
         self.perm_command.setText(str(req.get("detail", ""))[:900])
         where = (self.controller.context() or {}).get("default_dir", "")
         self.perm_where.setText(_("in {where}", where=config.short_path(where)) if where else "")
         self.refresh_state()
-        if not self.isVisible():
-            self.show()
-            self.raise_()
 
     def allow_shortcut(self) -> None:
         if self.controller.current_req is not None:
@@ -645,9 +926,47 @@ class ChatBox(QWidget):
         if self.controller.ask(self.input.text()):
             self.input.clear()
 
+    # ---- size ----------------------------------------------------------------------------------------
+    def available_rect(self):
+        screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
+        return screen.availableGeometry()
+
+    def update_size_button(self) -> None:
+        maximized = self.size_mode == "maximized"
+        t = chat_theme.tokens(self.theme)
+        self.size_btn.setIcon(make_icon("restore" if maximized else "expand", t["text2"]))
+        self.size_btn.setToolTip(_("Restore size") if maximized else _("Maximize"))
+        self.grip.setVisible(not maximized)
+
+    def toggle_maximized(self) -> None:
+        self.set_size_mode("normal" if self.size_mode == "maximized" else "maximized")
+
+    def set_size_mode(self, mode: str) -> None:
+        """normal (default, quick chats), large, or maximized (fills the usable screen area)."""
+        screen = self.available_rect()
+        if mode == "maximized":
+            if self.size_mode != "maximized":
+                self.size_before_max = self.geometry()
+            self.setGeometry(screen)
+        else:
+            w, h = self.SIZES[mode]
+            w, h = min(w, screen.width() - 16), min(h, screen.height() - 16)
+            base = self.size_before_max if self.size_mode == "maximized" and self.size_before_max else self.geometry()
+            x = min(max(base.right() + 1 - w, screen.left() + 8), screen.right() - w - 8)   # keep the bottom-right corner,
+            y = min(max(base.bottom() + 1 - h, screen.top() + 8), screen.bottom() - h - 8)  # so it grows upward and left
+            self.setGeometry(x, y, w, h)
+        self.size_mode = mode
+        self.update_size_button()
+
     # ---- placement and keys --------------------------------------------------------------------------
     def show_near(self, anchor: QWidget) -> None:
         """Open beside the mascot: above it when there is room, otherwise below, always inside the screen."""
+        if self.size_mode == "maximized":
+            self.show()
+            self.raise_()
+            self.activateWindow()
+            self.refresh_state()
+            return
         screen = (QApplication.screenAt(anchor.geometry().center()) or QApplication.primaryScreen()).availableGeometry()
         a = anchor.geometry()
         x = min(max(a.right() - self.width(), screen.left() + 8), screen.right() - self.width() - 8)

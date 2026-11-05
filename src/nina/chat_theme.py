@@ -125,6 +125,19 @@ QPushButton#IconButton:hover {{ background: {t['surf3']}; }}
 QPushButton#IconButton:pressed {{ background: {t['border']}; }}
 QPushButton#IconButton:focus {{ border: 2px solid {t['accent']}; }}
 
+QWidget#TabRow {{ background: {t['surf']}; border-bottom: 1px solid {t['border']}; }}
+QTabBar {{ background: transparent; }}
+QTabBar::tab {{
+  background: transparent; color: {t['text2']}; border: none; border-bottom: 2px solid transparent;
+  padding: 0 2px 0 10px; min-height: 30px; max-width: 150px; font-size: 12px; font-weight: 600;
+}}
+QTabBar::tab:hover {{ background: {t['surf3']}; color: {t['text']}; }}
+QTabBar::tab:selected {{ color: {t['text']}; border-bottom: 2px solid {t['accent']}; }}
+QPushButton#TabClose {{
+  background: transparent; border: none; padding: 0; min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px;
+}}
+QPushButton#TabClose:hover {{ background: {t['border']}; }}
+
 QWidget#PermissionSheet {{ background: {t['surf']}; border-top: 2px solid {t['warn']}; }}
 
 QTextBrowser {{

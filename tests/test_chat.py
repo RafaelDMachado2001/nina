@@ -214,8 +214,19 @@ class ChatBoxTest(IsolatedHome):
             self.runner = FakeRunner(emit, claude_bin)
             return self.runner
 
+        self.ctx, self.factory_fn = ctx, factory
+        self.runners = []
+
+        def new_controller(tab_id):
+            def f(emit, claude_bin):
+                r = FakeRunner(emit, claude_bin)
+                self.runners.append(r)
+                return r
+            return chat.ChatController(lambda: ctx, runner_factory=f, path=self.home / f"chat-{tab_id}.json",
+                                       tab_id=tab_id)
+
         c = chat.ChatController(lambda: ctx, runner_factory=factory, path=self.home / "chat.json")
-        box = chat.ChatBox(c, theme, on_theme)
+        box = chat.ChatBox(c, theme, on_theme, factory=new_controller, tabs_path=self.home / "chats.json")
         box.show()
         self.addCleanup(box.close)
         return c, box
@@ -228,6 +239,93 @@ class ChatBoxTest(IsolatedHome):
         self.assertIs(box.body.currentWidget(), box.log)
         c.reset()
         self.assertIs(box.body.currentWidget(), box.empty)
+
+    def test_window_grows_to_large_maximizes_and_restores(self):
+        _c, box = self.make()
+        self.assertEqual((box.size_mode, box.width(), box.height()), ("normal", 400, 520))   # default is unchanged
+        box.set_size_mode("large")
+        self.assertGreater(box.width(), 400)
+        self.assertGreater(box.height(), 520)
+        box.set_size_mode("normal")
+        self.assertEqual((box.width(), box.height()), (400, 520))
+        before = box.geometry()
+        box.size_btn.click()                                  # header button maximizes...
+        self.assertEqual(box.size_mode, "maximized")
+        self.assertEqual(box.geometry(), box.available_rect())
+        self.assertFalse(box.grip.isVisible())
+        box.size_btn.click()                                  # ...and restores
+        self.assertEqual((box.size_mode, box.geometry()), ("normal", before))
+        self.assertTrue(box.grip.isVisible())
+
+    def test_new_chat_opens_a_tab_and_keeps_the_other_chat(self):
+        c1, box = self.make()
+        self.assertFalse(box.tabrow.isVisible())            # a single chat looks like before
+        c1.ask("fix the login bug")
+        box.input.setText("draft in chat one")
+        box.new_tab()
+        c2 = box.controller
+        self.assertIsNot(c1, c2)
+        self.assertTrue(box.tabrow.isVisible())
+        self.assertTrue(all(t.close_btn.isVisible() for t in box.tabs))
+        self.assertEqual([box.tabbar.tabText(i) for i in range(2)], ["fix the login bug", "New chat"])
+        self.assertIs(box.body.currentWidget(), box.empty)  # the new chat starts empty
+        self.assertEqual(box.input.text(), "")
+        c2.ask("explain the repo")
+        self.assertEqual(box.tabbar.tabText(1), "explain the repo")
+        box.tabbar.setCurrentIndex(0)                       # back to the first one: history and draft are there
+        self.assertIs(box.controller, c1)
+        self.assertEqual([k for k, _t in box.entries], ["user"])
+        self.assertIn("fix the login bug", box.log.toPlainText())
+        self.assertNotIn("explain the repo", box.log.toPlainText())
+        self.assertEqual(box.input.text(), "draft in chat one")
+
+    def test_background_chat_answers_and_asks_permission_without_taking_the_screen(self):
+        c1, box = self.make()
+        c1.ask("one")
+        box.new_tab()
+        c2 = box.controller
+        c2.ask("two")
+        box.tabbar.setCurrentIndex(0)
+        c2.on_event("agent-1", "text", "answer for two")
+        self.assertNotIn("answer for two", box.log.toPlainText())
+        c2.on_event("agent-1", "permission", {"req": "r9", "tool": "Bash", "detail": "ls"})
+        self.assertFalse(box.sheet.isVisible())             # the sheet belongs to the chat on screen
+        box.tabbar.setCurrentIndex(1)
+        self.assertIn("answer for two", box.log.toPlainText())
+        self.assertTrue(box.sheet.isVisible())
+        self.assertEqual(box.perm_command.text(), "ls")
+
+    def test_closing_a_chat_stops_it_and_the_last_one_is_only_cleared(self):
+        c1, box = self.make()
+        c1.ask("one")
+        box.new_tab()
+        c2 = box.controller
+        c2.ask("two")
+        box.close_current()
+        self.assertEqual(len(box.tabs), 1)
+        self.assertIs(box.controller, c1)
+        self.assertEqual(self.runners[0].stopped, ["agent-1"])
+        self.assertFalse(box.tabrow.isVisible())
+        box.close_current()                                 # last one: cleared, not removed
+        self.assertEqual(len(box.tabs), 1)
+        self.assertIs(box.body.currentWidget(), box.empty)
+
+    def test_open_chats_come_back_on_the_next_run(self):
+        c1, box = self.make()
+        c1.ask("first topic")
+        box.new_tab()
+        box.controller.ask("second topic")
+        saved = chat.load_tabs(self.home / "chats.json")
+        self.assertEqual([t["title"] for t in saved["tabs"]], ["first topic", "second topic"])
+        second_id = saved["tabs"][1]["id"]
+        self.assertEqual(saved["active"], second_id)
+        c = chat.ChatController(lambda: self.ctx, runner_factory=self.factory_fn, path=self.home / "chat.json")
+        again = chat.ChatBox(c, "dark", None, factory=lambda tid: chat.ChatController(
+            lambda: self.ctx, runner_factory=self.factory_fn, path=self.home / f"chat-{tid}.json", tab_id=tid),
+            saved=saved, tabs_path=self.home / "chats2.json")
+        self.addCleanup(again.close)
+        self.assertEqual([again.tabbar.tabText(i) for i in range(2)], ["first topic", "second topic"])
+        self.assertEqual(again.controller.tab_id, second_id)
 
     def test_input_is_disabled_while_the_agent_works(self):
         c, box = self.make()

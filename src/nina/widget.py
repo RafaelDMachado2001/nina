@@ -51,7 +51,6 @@ class Nina(QWidget):
         self.setWindowTitle(APP_NAME)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.chat_controller = None
         self.chat_box = None
         self.setToolTip(_("Click: open Claude Code\nDouble click: talk to NINA\nRight click: options")
                         if self.managed_available() else _("Click: open Claude Code\nRight click: options"))
@@ -92,8 +91,9 @@ class Nina(QWidget):
     def shutdown(self) -> None:
         """Stop the animation and release the agent registry (called when the application quits)."""
         self.timer.stop()
-        if self.chat_controller is not None:
-            self.chat_controller.shutdown()
+        if self.chat_box is not None:
+            for tab in self.chat_box.tabs:
+                tab.controller.shutdown()
         if self.agents is not None:
             self.agents.close()
 
@@ -634,41 +634,56 @@ class Nina(QWidget):
         if not self.managed_available():
             QMessageBox.information(self, APP_NAME, _("Talking to NINA needs managed agents: install the 'agents' extra."))
             return False
-        ctrl = chat.ChatController(lambda: {**self.managed_context(), "chat_role": self.cfg.get("chat_role", "")}, parent=self)
-        ctrl.attention.connect(lambda text: self.say(text, 4))
-        ctrl.state_changed.connect(self.on_chat_state)
-        ctrl.message.connect(lambda *_a: self.on_chat_activity())
-        ctrl.finished.connect(self.celebrate)
-        ctrl.permission_asked.connect(self.on_chat_permission)
-        ctrl.permission_cleared.connect(lambda: self.on_chat_state(ctrl.status))
-        self.chat_controller = ctrl
-        self.chat_box = chat.ChatBox(ctrl, self.cfg.get("chat_theme", "dark"), self.save_chat_theme)
+        saved = chat.load_tabs()
+        first = saved["tabs"][0]["id"] if saved else "main"
+        self.chat_box = chat.ChatBox(self.make_chat_controller(first), self.cfg.get("chat_theme", "dark"),
+                                     self.save_chat_theme, factory=self.make_chat_controller, saved=saved)
         return True
+
+    @property
+    def chat_controller(self):
+        """The conversation on screen (each open chat has its own)."""
+        return self.chat_box.controller if self.chat_box is not None else None
+
+    def make_chat_controller(self, tab_id: str):
+        ctrl = chat.ChatController(lambda: {**self.managed_context(), "chat_role": self.cfg.get("chat_role", "")},
+                                   path=chat.tab_state_path(tab_id), parent=self, tab_id=tab_id)
+        ctrl.attention.connect(lambda text: self.say(text, 4))
+        ctrl.state_changed.connect(lambda state, c=ctrl: self.on_chat_state(c, state))
+        ctrl.message.connect(lambda *_a, c=ctrl: self.on_chat_activity(c))
+        ctrl.finished.connect(self.celebrate)
+        ctrl.permission_asked.connect(lambda req, c=ctrl: self.on_chat_permission(c, req))
+        ctrl.permission_cleared.connect(lambda c=ctrl: self.on_chat_state(c, c.status))
+        return ctrl
 
     def save_chat_theme(self, theme: str) -> None:
         self.cfg["chat_theme"] = theme
         config.save_config(self.cfg)
 
-    def on_chat_permission(self, _req: dict) -> None:
-        self.sessions["nina-chat"] = {"state": "waiting", "last": time.monotonic(), "tool": None,
-                                      "text": _("I need your permission!")}
+    @staticmethod
+    def chat_key(ctrl) -> str:
+        return f"nina-chat-{ctrl.tab_id}"
+
+    def on_chat_permission(self, ctrl, _req: dict) -> None:
+        self.sessions[self.chat_key(ctrl)] = {"state": "waiting", "last": time.monotonic(), "tool": None,
+                                              "text": _("I need your permission!")}
         self.jump = [2, 4, 4, 2]
         self.touch()
         self.update()
 
-    def on_chat_state(self, state: str) -> None:
-        """Mirror the conversation in the mascot: working while it thinks, waiting while it needs you."""
-        if self.chat_controller is not None and self.chat_controller.current_req is not None:
+    def on_chat_state(self, ctrl, state: str) -> None:
+        """Mirror the conversations in the mascot: working while one thinks, waiting while one needs you."""
+        if ctrl.current_req is not None:
             return          # the permission alert stays until you answer
         if state in ("working", "starting"):
-            self.sessions["nina-chat"] = {"state": "working", "last": time.monotonic(), "tool": None}
+            self.sessions[self.chat_key(ctrl)] = {"state": "working", "last": time.monotonic(), "tool": None}
         else:
-            self.sessions.pop("nina-chat", None)
+            self.sessions.pop(self.chat_key(ctrl), None)
         self.touch()
         self.update()
 
-    def on_chat_activity(self) -> None:
-        st = self.sessions.get("nina-chat")
+    def on_chat_activity(self, ctrl) -> None:
+        st = self.sessions.get(self.chat_key(ctrl))
         if st is not None:
             st["last"] = time.monotonic()
 
