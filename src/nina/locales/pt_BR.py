@@ -150,8 +150,7 @@ CATALOG = {
     "Opening Claude...": "Abrindo o Claude...",
     "Mission accepted!": "Missão aceita!",
     "Click: open Claude Code\nRight click: options": "Clique: abrir o Claude Code\nBotão direito: opções",
-    "Click: open Claude Code\nDouble click: talk to NINA\nRight click: options":
-        "Clique: abrir o Claude Code\nDuplo clique: conversar com a NINA\nBotão direito: opções",
+    "Double click: talk to NINA\nRight click: options": "Duplo clique: conversar com a NINA\nBotão direito: opções",
     "Shortcut removed.": "Atalho removido.",
     "There was no NINA shortcut.": "Não havia atalho da NINA.",
     "Shortcut {keys} runs: {command}": "O atalho {keys} executa: {command}",
@@ -179,6 +178,12 @@ CATALOG = {
     "Message NINA...": "Mensagem para a NINA...",
     "New chat": "Nova conversa",
     "Close chat": "Fechar conversa",
+    "default": "padrão",
+    "Default account ({account})": "Conta padrão ({account})",
+    "Account for this chat": "Conta deste chat",
+    "No accounts found": "Nenhuma conta encontrada",
+    "Account changed to {account}: the next message starts a new Claude session.":
+        "Conta alterada para {account}: a próxima mensagem inicia uma nova sessão do Claude.",
     "Maximize": "Maximizar",
     "Restore size": "Restaurar tamanho",
     "Normal size": "Tamanho normal",

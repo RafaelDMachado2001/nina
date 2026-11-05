@@ -44,8 +44,8 @@ and `nina --uninstall-hooks` removes only NINA's entries. Start a new `claude` s
 
 | Action | Result |
 |---|---|
-| Click | Opens Claude Code in the default folder (while she is waiting, it only dismisses the alert) |
-| Double click | Opens the chat window beside her (needs the `agents` extra; a single click waits a moment to tell the two apart) |
+| Click | Only dismisses a waiting alert; with the `agents` extra it opens nothing (without it, a click opens Claude Code in the default folder) |
+| Double click | Opens the chat window beside her (needs the `agents` extra); the terminal stays one right click away |
 | Drag | Moves her (the position is remembered) |
 | Right click | Agents panel, new agent, open elsewhere / with another account, size, start with the system, connect to Claude Code, nap, quit |
 
@@ -119,7 +119,7 @@ You are a reviewer... (the body is the role's system prompt)
 
 Double click her (or right click → **Talk to NINA...**, or run `nina chat`) and a small chat window opens beside her.
 Behind it is one persistent managed agent (the **General assistant** role, in your default folder and active account):
-the conversation **continues between runs**, **New chat** starts a fresh one, and she shows the same states as for any agent
+the conversation **continues between runs**, **New chat** (`Ctrl+N`) opens another chat in a tab (each one has its own agent and can run at the same time), the account chip in the header picks the Claude account of that chat, and she shows the same states as for any agent
 (a spinning shuriken while it thinks, the permission alert when it needs you). Reads are pre-approved; every write or command asks **Allow / Deny**.
 The window is frameless (drag the header, resize from the bottom-right corner) and has a dark and a light theme (menu ⋮); `Ctrl+N` starts a new chat and the permission sheet answers **Deny** to `Enter`/`Esc` and **Allow** to `Alt+P`.
 Set `"chat_role"` in `config.json` to use another role (for example your own `~/.config/nina/roles/<id>.md`).

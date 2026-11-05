@@ -52,7 +52,7 @@ class Nina(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.chat_box = None
-        self.setToolTip(_("Click: open Claude Code\nDouble click: talk to NINA\nRight click: options")
+        self.setToolTip(_("Double click: talk to NINA\nRight click: options")
                         if self.managed_available() else _("Click: open Claude Code\nRight click: options"))
 
         self.t = 0
@@ -74,7 +74,6 @@ class Nina(QWidget):
             except Exception as e:   # without the agents panel, everything else still works
                 print(f"NINA: agents panel unavailable: {e}", file=sys.stderr)
         self.last_activity = time.monotonic()
-        self.click_pending = False
         self.press_global = None
         self.press_window = None
         self.dragging = False
@@ -337,23 +336,13 @@ class Nina(QWidget):
             self.touch()
         elif self.mode() == "wait":
             self.dismiss_waiting()
-        elif self.managed_available():
-            # Wait for a possible second click: a double click opens the chat instead of the terminal.
-            QTimer.singleShot(QApplication.doubleClickInterval(), self.single_click)
-            self.click_pending = True
-        else:
+        elif not self.managed_available():     # with the chat available, only a double click does something
             self.launch(config.default_dir_of(self.cfg))
         self.press_global = None
         self.dragging = False
 
-    def single_click(self) -> None:
-        if self.click_pending:
-            self.click_pending = False
-            self.launch(config.default_dir_of(self.cfg))
-
     def mouseDoubleClickEvent(self, e) -> None:
         if e.button() == Qt.LeftButton and self.managed_available():
-            self.click_pending = False
             self.toggle_chat()
 
     def enterEvent(self, _e) -> None:

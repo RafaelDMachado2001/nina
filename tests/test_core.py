@@ -267,16 +267,14 @@ class ChatIntegrationTest(IsolatedHome):
         p = QPointF(10, 10)
         self.n.mouseDoubleClickEvent(QMouseEvent(QEvent.MouseButtonDblClick, p, p, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
 
-    def test_single_click_opens_claude_after_the_double_click_interval(self):
+    def test_single_click_opens_nothing_when_the_chat_is_available(self):
         self.release()
-        self.assertEqual(self.launched, [])            # waiting to see whether a second click follows
-        self.n.single_click()
-        self.assertEqual(len(self.launched), 1)
+        self.assertEqual(self.launched, [])
+        self.assertIsNone(self.n.chat_box)
 
     def test_double_click_opens_the_chat_and_not_the_terminal(self):
         self.release()
         self.double_click()
-        self.n.single_click()
         self.assertEqual(self.launched, [])
         self.assertTrue(self.n.chat_box.isVisible())
         self.double_click()

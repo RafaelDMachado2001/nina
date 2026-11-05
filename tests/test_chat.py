@@ -203,6 +203,40 @@ class ChatPermissionTest(ChatControllerTest):
         self.assertEqual(self.runner.started[1]["prompt"], "first try")
         self.assertFalse(self.make().retry())          # nothing to retry
 
+    def test_each_chat_can_use_its_own_account_and_the_default_follows_the_context(self):
+        (self.accounts / "work").mkdir(parents=True)
+        (self.accounts / "personal").mkdir(parents=True)
+        c = self.make(account="personal")
+        self.assertEqual(c.effective_account(), "personal")
+        c.set_account("work")
+        c.ask("hi")
+        self.assertEqual(self.runner.started[0]["account"], "work")
+        self.assertEqual(self.runner.started[0]["config_dir"], str(self.accounts / "work"))
+        c.on_event("agent-1", "status", "idle")
+        c.set_account(None)                                 # back to the default account
+        self.assertEqual(c.effective_account(), "personal")
+
+    def test_changing_account_starts_a_new_session_and_is_blocked_while_busy(self):
+        (self.accounts / "work").mkdir(parents=True)
+        c = self.make()
+        c.ask("hi")
+        c.on_event("agent-1", "session", "sess-1")
+        self.assertFalse(c.set_account("work"))             # still answering
+        c.on_event("agent-1", "status", "idle")
+        changed = []
+        c.account_changed.connect(lambda: changed.append(1))
+        self.assertTrue(c.set_account("work"))
+        self.assertEqual((self.runner.stopped, changed, c.status), (["agent-1"], [1], "none"))
+        self.assertTrue(any(k == "info" and "work" in t for k, t in self.messages))
+        c.ask("again")
+        self.assertEqual((self.runner.started[1]["account"], self.runner.started[1]["resume"]), ("work", None))
+
+    def test_a_saved_session_of_another_account_is_not_resumed(self):
+        c = self.make(account="work")
+        chat.save_saved({"session": "old", "account": "personal"}, self.state)
+        c.ask("hi")
+        self.assertIsNone(self.runner.started[0]["resume"])
+
 
 class ChatBoxTest(IsolatedHome):
     def make(self, theme="dark", on_theme=None):
@@ -326,6 +360,20 @@ class ChatBoxTest(IsolatedHome):
         self.addCleanup(again.close)
         self.assertEqual([again.tabbar.tabText(i) for i in range(2)], ["first topic", "second topic"])
         self.assertEqual(again.controller.tab_id, second_id)
+
+    def test_account_chip_shows_and_changes_the_chat_account(self):
+        c1, box = self.make()
+        self.assertEqual(box.account_btn.text(), "default")
+        c1.set_account("work")
+        self.assertEqual(box.account_btn.text(), "work")
+        box.new_tab()
+        self.assertEqual(box.account_btn.text(), "default")   # a new chat follows the default account
+        box.tabbar.setCurrentIndex(0)
+        self.assertEqual(box.account_btn.text(), "work")
+        saved = chat.load_tabs(self.home / "chats.json")
+        self.assertEqual([t["account"] for t in saved["tabs"]], ["work", None])
+        c1.set_status("working")
+        self.assertFalse(box.account_btn.isEnabled())
 
     def test_input_is_disabled_while_the_agent_works(self):
         c, box = self.make()

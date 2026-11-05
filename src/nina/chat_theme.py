@@ -125,6 +125,14 @@ QPushButton#IconButton:hover {{ background: {t['surf3']}; }}
 QPushButton#IconButton:pressed {{ background: {t['border']}; }}
 QPushButton#IconButton:focus {{ border: 2px solid {t['accent']}; }}
 
+QPushButton#AccountChip {{
+  background: transparent; color: {t['text2']}; border: 1px solid {t['border']}; padding: 0 8px;
+  min-width: 0; max-width: 110px; min-height: 22px; max-height: 22px; font-size: 11px; font-weight: 600;
+}}
+QPushButton#AccountChip:hover {{ background: {t['surf3']}; color: {t['text']}; }}
+QPushButton#AccountChip:disabled {{ color: {t['text2']}; border-color: transparent; }}
+QPushButton#AccountChip:focus {{ border: 1px solid {t['accent']}; padding: 0 8px; }}
+
 QWidget#TabRow {{ background: {t['surf']}; border-bottom: 1px solid {t['border']}; }}
 QTabBar {{ background: transparent; }}
 QTabBar::tab {{

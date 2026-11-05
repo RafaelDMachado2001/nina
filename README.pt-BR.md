@@ -48,8 +48,8 @@ Isso faz o merge dos hooks da NINA no `settings.json` da conta ativa: nunca sobr
 
 | Ação | Resultado |
 |---|---|
-| Clique | Abre o Claude Code na pasta padrão (enquanto ela espera, só dispensa o alerta) |
-| Duplo clique | Abre a janela de conversa ao lado dela (exige o extra `agents`; o clique simples espera um instante para distinguir os dois) |
+| Clique | Só dispensa um alerta de espera; com o extra `agents` não abre nada (sem ele, abre o Claude Code na pasta padrão) |
+| Duplo clique | Abre a janela de conversa ao lado dela (exige o extra `agents`); o terminal fica a um clique direito de distância |
 | Arrastar | Move a NINA (a posição fica salva) |
 | Botão direito | Painel de agentes, novo agente, abrir em outra pasta / com outra conta, tamanho, iniciar com o sistema, conectar ao Claude Code, cochilo, sair |
 
@@ -123,7 +123,7 @@ Você é um revisor... (o corpo é o prompt de sistema do papel)
 
 Dê um duplo clique nela (ou botão direito → **Conversar com a NINA...**, ou rode `nina chat`) e uma janela de conversa abre ao lado dela.
 Por trás há um agente gerenciado persistente (o papel **Assistente geral**, na sua pasta padrão e conta ativa): a conversa **continua entre execuções**,
-**Nova conversa** começa outra, e ela mostra os mesmos estados de qualquer agente (shuriken girando enquanto pensa, o alerta quando precisa de você).
+**Nova conversa** (`Ctrl+N`) abre outro chat em uma aba (cada um tem seu agente e podem trabalhar ao mesmo tempo), o botão de conta no cabeçalho escolhe a conta do Claude daquele chat, e ela mostra os mesmos estados de qualquer agente (shuriken girando enquanto pensa, o alerta quando precisa de você).
 Leituras são pré-aprovadas; toda escrita ou comando pede **Permitir / Negar**. A janela não tem moldura (arraste pelo cabeçalho, redimensione pelo canto inferior direito) e tem tema escuro e claro (menu ⋮); `Ctrl+N` inicia uma nova conversa e a folha de permissão responde **Negar** a `Enter`/`Esc` e **Permitir** a `Alt+P`.
 Use `"chat_role"` no `config.json` para outro papel.
 

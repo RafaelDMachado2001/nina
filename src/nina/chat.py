@@ -85,7 +85,9 @@ def load_tabs(path: Path | None = None) -> dict:
         tid = t.get("id") if isinstance(t, dict) else None
         if isinstance(tid, str) and re.fullmatch(r"[0-9a-z]{1,16}", tid) and tid not in seen:
             seen.add(tid)
-            tabs.append({"id": tid, "title": str(t.get("title") or "")[:60]})
+            account = t.get("account")
+            tabs.append({"id": tid, "title": str(t.get("title") or "")[:60],
+                         "account": account if isinstance(account, str) else None})
     return {"tabs": tabs, "active": data.get("active")} if tabs else {}
 
 
@@ -118,6 +120,7 @@ class ChatController(QObject):
     attention = Signal(str)           # short text for the mascot to say (permission requests)
     permission_asked = Signal(dict)   # {"req", "tool", "detail"}: the window shows Allow / Deny
     permission_cleared = Signal()
+    account_changed = Signal()
     finished = Signal()               # an answer is complete
     _event = Signal(str, str, object)   # from the Runner's thread, delivered on the UI thread
 
@@ -125,6 +128,7 @@ class ChatController(QObject):
         """`context()` returns the same dict as the managed tab, plus an optional "chat_role"."""
         super().__init__(parent)
         self.tab_id = tab_id
+        self.account = None               # None follows the default account (the mascot's menu); otherwise this chat's own
         self.context = context
         self.path = path
         self.runner_factory = runner_factory or (lambda emit, claude_bin: managed.Runner(emit, claude_bin))
@@ -142,6 +146,28 @@ class ChatController(QObject):
     @property
     def busy(self) -> bool:
         return self.status in BUSY
+
+    def effective_account(self) -> str:
+        return self.context().get("account", "") or "" if self.account is None else self.account
+
+    def set_account(self, slug) -> bool:
+        """Use another Claude account in this chat (None = the default one). Sessions belong to an account, so the
+        next message starts a new Claude session; the messages already on screen stay."""
+        if self.busy or slug == self.account:
+            return False
+        had_conversation = self.agent_id is not None or bool(load_saved(self.path))
+        self.account = slug
+        if self.agent_id is not None:
+            self.runner.stop(self.agent_id)
+            self.agent_id = None
+            self.drop_permissions()
+            self.set_status("none")
+        save_saved({}, self.path)
+        if had_conversation:
+            self.message.emit("info", _("Account changed to {account}: the next message starts a new Claude session.",
+                                        account=self.effective_account() or _("default")))
+        self.account_changed.emit()
+        return True
 
     def role_for_chat(self) -> dict:
         known = roles_mod.load_roles(self.context().get("roles_dir"))
@@ -165,11 +191,13 @@ class ChatController(QObject):
         ctx = self.context()
         if self.runner is None:
             self.runner = self.runner_factory(self._event.emit, managed.find_claude_bin(ctx.get("claude_bin", "")))
-        account = ctx.get("account", "") or ""
+        account = self.effective_account()
         config_dir = None
         if account and (Path(ctx["accounts_root"]) / account).is_dir():
             config_dir = str(Path(ctx["accounts_root"]) / account)
         saved = load_saved(self.path)
+        if saved.get("account", account) != account:      # a session of another account cannot be resumed here
+            saved = {}
         self.resuming = bool(saved)
         self.role = self.role_for_chat()
         self.set_status("starting")
@@ -217,7 +245,7 @@ class ChatController(QObject):
                 self.finished.emit()
         elif kind == "session":
             ctx = self.context()
-            save_saved({"session": payload, "account": ctx.get("account", ""), "cwd": ctx["default_dir"]}, self.path)
+            save_saved({"session": payload, "account": self.effective_account(), "cwd": ctx["default_dir"]}, self.path)
         elif kind == "text":
             self.message.emit("assistant", payload)
         elif kind == "tool":
@@ -459,6 +487,11 @@ class ChatBox(QWidget):
         self.status = QLabel("")
         self.status.setObjectName("StatusLabel")
         self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.account_btn = QPushButton()
+        self.account_btn.setObjectName("AccountChip")
+        self.account_btn.setCursor(Qt.PointingHandCursor)
+        self.account_btn.setToolTip(_("Account for this chat"))
+        self.account_btn.clicked.connect(self.open_account_menu)
         self.size_btn = self.icon_button(_("Maximize"))
         self.size_btn.clicked.connect(self.toggle_maximized)
         self.menu_btn = self.icon_button(_("Menu"))
@@ -473,6 +506,7 @@ class ChatBox(QWidget):
         hl.addSpacing(-2)
         hl.addWidget(self.dot)
         hl.addWidget(self.status, 1)
+        hl.addWidget(self.account_btn)
         hl.addWidget(self.size_btn)
         hl.addWidget(self.menu_btn)
         hl.addWidget(self.close_btn)
@@ -637,6 +671,7 @@ class ChatBox(QWidget):
         c.state_changed.connect(lambda _s, tab=tab: self.on_tab_state(tab))
         c.permission_asked.connect(lambda req, tab=tab: self.on_permission(req, tab))
         c.permission_cleared.connect(lambda tab=tab: self.on_tab_state(tab))
+        c.account_changed.connect(lambda tab=tab: self.on_account_changed(tab))
 
     def restore(self, saved: dict) -> None:
         """Reopen the chats of the last run (empty on screen, but each one resumes its Claude session)."""
@@ -644,8 +679,10 @@ class ChatBox(QWidget):
         if not entries or entries[0]["id"] != getattr(self.controller, "tab_id", "main") or self.factory is None:
             return
         self.tabs[0].title = entries[0]["title"]
+        self.tabs[0].controller.account = entries[0].get("account")
         for e in entries[1:]:
-            self.add_tab(self.factory(e["id"]), e["title"], select=False)
+            tab = self.add_tab(self.factory(e["id"]), e["title"], select=False)
+            tab.controller.account = e.get("account")
         by_id = {getattr(t.controller, "tab_id", ""): i for i, t in enumerate(self.tabs)}
         self.decorate_all()
         self.tabbar.setCurrentIndex(by_id.get(saved.get("active"), 0))
@@ -763,7 +800,8 @@ class ChatBox(QWidget):
     def save_tab_list(self) -> None:
         if self.factory is None:
             return
-        save_tabs({"tabs": [{"id": getattr(t.controller, "tab_id", "main"), "title": t.title} for t in self.tabs],
+        save_tabs({"tabs": [{"id": getattr(t.controller, "tab_id", "main"), "title": t.title, "account": t.controller.account}
+                    for t in self.tabs],
                    "active": getattr(self.controller, "tab_id", "main")}, self.tabs_path)
 
     # ---- theme -----------------------------------------------------------------------------------
@@ -883,6 +921,7 @@ class ChatBox(QWidget):
         self.dot.set_color({"ready": t["accent"], "thinking": t["indigo"], "perm": t["warn"], "error": t["err_text"]}[key])
         busy = self.controller.busy
         asking = self.controller.current_req is not None
+        self.update_account_button()
         self.input.setEnabled(not busy)
         self.send_btn.setEnabled(not busy)
         self.stop_btn.setVisible(self.controller.status == "working")
@@ -930,6 +969,35 @@ class ChatBox(QWidget):
     def available_rect(self):
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         return screen.availableGeometry()
+
+    # ---- account of this chat ------------------------------------------------------------------------
+    def update_account_button(self) -> None:
+        name = self.controller.effective_account() or _("default")
+        self.account_btn.setText(name if len(name) <= 14 else name[:13] + "…")
+        self.account_btn.setToolTip(_("Account for this chat") + f": {name}")
+        self.account_btn.setEnabled(not self.controller.busy)
+
+    def on_account_changed(self, tab: ChatTab) -> None:
+        self.save_tab_list()
+        if tab is self.current:
+            self.update_account_button()
+
+    def open_account_menu(self) -> None:
+        c = self.controller
+        accounts = (c.context() or {}).get("accounts") or []
+        default = (c.context() or {}).get("account", "") or ""
+        menu = QMenu(self)
+        entries = [(None, _("Default account ({account})", account=default or _("default")))]
+        entries += [(a, a) for a in accounts]
+        for slug, label in entries:
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(c.account == slug)
+            act.triggered.connect(lambda _c=False, slug=slug: self.controller.set_account(slug))
+        if not accounts:
+            menu.addSeparator()
+            menu.addAction(_("No accounts found")).setEnabled(False)
+        menu.exec(self.account_btn.mapToGlobal(QPoint(0, self.account_btn.height())))
 
     def update_size_button(self) -> None:
         maximized = self.size_mode == "maximized"
