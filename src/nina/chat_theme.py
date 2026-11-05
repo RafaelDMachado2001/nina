@@ -112,6 +112,15 @@ QPushButton#Interrupt:hover, QPushButton#Allow:hover {{ background: {t['surf3']}
 QPushButton#Interrupt:pressed, QPushButton#Allow:pressed {{ background: {t['border']}; }}
 QPushButton#Deny {{ background: {t['surf3']}; border: 2px solid {t['accent']}; padding: 0 11px; min-width: 112px; }}
 
+QListWidget#Suggestions {{
+  background: {t['surf2']}; border: 1px solid {t['border_strong']}; color: {t['text']}; outline: 0;
+  font-family: {FONT_MONO}; font-size: 12px;
+}}
+QListWidget#Suggestions::item {{ padding: 5px 10px; }}
+QListWidget#Suggestions::item:selected {{ background: {t['surf3']}; color: {t['accent_text']}; }}
+QPushButton#Thumb {{ background: {t['surf']}; border: 1px solid {t['border_strong']}; padding: 0; min-width: 0; }}
+QPushButton#Thumb:hover {{ border-color: {t['accent']}; }}
+
 QPushButton#Suggestion {{
   background: {t['surf']}; border: 1px solid {t['border']};
   font-weight: 500; min-height: 34px; text-align: left; padding: 0 12px;
@@ -212,6 +221,13 @@ def user_html(text: str, name: str = "dark") -> str:
     return (f'<table align="right" cellspacing="0" cellpadding="0" style="margin: 0 0 10px 48px;"><tr>'
             f'<td bgcolor="{t["user_bg"]}" style="padding: 8px 10px; color: {t["user_text"]}; font-size: 14px;">'
             f'{html.escape(text).replace(chr(10), "<br>")}</td></tr></table>')
+
+
+def image_html(src: str, name: str = "dark") -> str:
+    """An attached image, right-aligned like your messages. `src` is a resource registered in the document."""
+    t = tokens(name)
+    return (f'<table align="right" cellspacing="0" cellpadding="0" style="margin: 0 0 10px 48px;"><tr>'
+            f'<td bgcolor="{t["user_bg"]}" style="padding: 6px;"><img src="{html.escape(src, quote=True)}"></td></tr></table>')
 
 
 def tool_html(label: str, name: str = "dark") -> str:

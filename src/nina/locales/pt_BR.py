@@ -72,6 +72,10 @@ CATALOG = {
     "Allow": "Permitir",
     "Deny": "Negar",
     "Allow always": "Permitir sempre",
+    "Message NINA... (@ for files)": "Mensagem para a NINA... (@ para arquivos)",
+    "Remove image": "Remover imagem",
+    "Image": "Imagem",
+    "At most {n} images per message.": "No máximo {n} imagens por mensagem.",
     "Allowed always: {rules}": "Permitido sempre: {rules}",
     "Allow always saves: {rules}": "Permitir sempre salva: {rules}",
     "auto": "auto",
@@ -182,7 +186,6 @@ CATALOG = {
     "Talk to NINA...": "Conversar com a NINA...",
     "Talking to NINA needs managed agents: install the 'agents' extra.":
         "Conversar com a NINA exige agentes gerenciados: instale o extra 'agents'.",
-    "Message NINA...": "Mensagem para a NINA...",
     "New chat": "Nova conversa",
     "Close chat": "Fechar conversa",
     "default": "padrão",

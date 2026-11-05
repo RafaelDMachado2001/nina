@@ -29,7 +29,8 @@ BUILTIN = {
         "title": N_("General assistant"),
         "description": N_("General conversation with read access pre-approved and every write confirmed."),
         "tools": READ_TOOLS, "writes": ["**"],
-        "prompt": LANGUAGE_RULE + "You are NINA, the user's assistant. Be direct and concise. Read and search before "
+        "prompt": LANGUAGE_RULE + "You are NINA, the user's assistant. Be direct and concise. A word like @path in the user's message is a "
+                  "file or folder they mention: read it (or explore the folder) before answering. Read and search before "
                   "stating facts. Before changing any file, explain what will change.",
     },
     "agent-builder": {

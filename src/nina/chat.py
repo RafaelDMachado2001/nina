@@ -5,6 +5,7 @@ The conversation continues between runs: the Claude session id is kept in `chat.
 resumed on the next message. Everything the agent wants to do beyond reading still goes through the Allow / Deny
 dialog, exactly like the other managed agents.
 """
+import base64
 import json
 import os
 import re
@@ -12,12 +13,11 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPoint, QPointF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QImage, QTextDocument, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
     QPushButton,
     QSizeGrip,
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina import chat_theme, config
+from nina import chat_input, chat_theme, config, mentions
 from nina.agents import managed
 from nina.agents import roles as roles_mod
 from nina.i18n import _
@@ -143,6 +143,7 @@ class ChatController(QObject):
         self.queue = []
         self.current_req = None
         self.last_user = ""
+        self.last_images = []
         self._event.connect(self.on_event)
 
     # ---- API (UI thread) ---------------------------------------------------------------------------
@@ -176,18 +177,25 @@ class ChatController(QObject):
         known = roles_mod.load_roles(self.context().get("roles_dir"))
         return known.get(self.context().get("chat_role") or "general") or known["general"]
 
-    def ask(self, text: str) -> bool:
-        """Send a message. Returns False when it was not sent (empty, or the agent is still answering)."""
+    def ask(self, text: str, images=None) -> bool:
+        """Send a message, with optional images ({"media_type", "data"}). Returns False when it was not sent
+        (nothing to say, or the agent is still answering). `@~/file` is expanded so the agent can read it."""
         text = (text or "").strip()
-        if not text or self.busy:
+        images = list(images or [])
+        if not (text or images) or self.busy:
             return False
-        self.last_user = text
-        self.message.emit("user", text)
+        self.last_user, self.last_images = text, images
+        if text:
+            self.message.emit("user", text)
+        for image in images:
+            self.message.emit("image", image["data"])
+        body = mentions.expand_home(text)
+        message = {"text": body, "images": images} if images else body
         if self.agent_id is not None and self.status == "idle":
             self.set_status("working")
-            self.runner.send(self.agent_id, text)
+            self.runner.send(self.agent_id, message)
         else:
-            self.start(text)
+            self.start(message)
         return True
 
     def start(self, prompt: str) -> None:
@@ -210,7 +218,7 @@ class ChatController(QObject):
 
     def retry(self) -> bool:
         """Send the last message again (after an error)."""
-        return self.ask(self.last_user)
+        return self.ask(self.last_user, self.last_images)
 
     def interrupt(self) -> None:
         if self.agent_id is not None and self.status == "working":
@@ -450,6 +458,7 @@ class ChatTab:
         self.title = title
         self.entries = []                     # (kind, text), kept to re-render when the theme or the tab changes
         self.draft = ""
+        self.images = []                      # chat_input.Attachment: pasted images not sent yet
         self.attention = False                # a background chat needs a permission answer
         self.close_btn = None
 
@@ -567,8 +576,17 @@ class ChatBox(QWidget):
         self.composer = QWidget()
         self.composer.setObjectName("Composer")
         self.composer.setAttribute(Qt.WA_StyledBackground, True)
-        self.input = QLineEdit()
-        self.input.setPlaceholderText(_("Message NINA..."))
+        self.input = chat_input.MentionInput()
+        self.input.setPlaceholderText(_("Message NINA... (@ for files)"))
+        self.input.cwd = lambda: (self.controller.context() or {}).get("default_dir") or os.getcwd()
+        self.mention_popup = chat_input.SuggestionPopup(self)
+        self.input.popup = self.mention_popup
+        self.mention_popup.shown.connect(self.place_popup)
+        self.input.image_pasted.connect(lambda image: self.attach_images([image]))
+        self.input.images_dropped.connect(self.attach_files)
+        self.strip = chat_input.AttachmentStrip()
+        self.strip.removed.connect(self.remove_image)
+        self.setAcceptDrops(True)
         self.input.setFixedHeight(36)
         self.input.returnPressed.connect(self.submit)
         self.stop_btn = QPushButton(_("Interrupt"))
@@ -579,9 +597,13 @@ class ChatBox(QWidget):
         self.send_btn.setObjectName("Send")
         self.send_btn.setToolTip(_("Send"))
         self.send_btn.clicked.connect(self.submit)
-        cl = QHBoxLayout(self.composer)
-        cl.setContentsMargins(10, 10, 10, 10)
+        outer = QVBoxLayout(self.composer)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+        outer.addWidget(self.strip)
+        cl = QHBoxLayout()
         cl.setSpacing(8)
+        outer.addLayout(cl)
         cl.addWidget(self.input, 1)
         cl.addWidget(self.stop_btn)
         cl.addWidget(self.send_btn)
@@ -768,6 +790,7 @@ class ChatBox(QWidget):
             self.tabbar.setCurrentIndex(i)
             self.tabbar.blockSignals(False)
         self.input.setText(tab.draft)
+        self.strip.set_attachments(tab.images)
         self.render_all()
         self.body.setCurrentWidget(self.log if tab.entries else self.empty)
         if self.controller.current_req is not None:
@@ -902,9 +925,11 @@ class ChatBox(QWidget):
                 self.log.clear()
                 self.body.setCurrentWidget(self.empty)
             return
+        if kind == "image":
+            text = chat_input.thumbnail_b64(text)        # keep a small copy: the full image went to the agent
         tab.entries.append((kind, text))
-        if kind == "user" and not tab.title:
-            tab.title = title_from(text)
+        if kind in ("user", "image") and not tab.title:
+            tab.title = title_from(text) if kind == "user" else _("Image")
             self.decorate(tab)
             self.save_tab_list()
         if shown:
@@ -913,6 +938,11 @@ class ChatBox(QWidget):
 
     def html_for(self, kind: str, text: str) -> str:
         th = self.theme
+        if kind == "image":
+            name = f"nina-image:{abs(hash(text))}"
+            self.log.document().addResource(QTextDocument.ImageResource, QUrl(name),
+                                            QImage.fromData(base64.b64decode(text)))
+            return chat_theme.image_html(name, th)
         if kind == "user":
             return chat_theme.user_html(text, th)
         if kind == "assistant":
@@ -1003,8 +1033,39 @@ class ChatBox(QWidget):
             self.controller.answer(True)
 
     def submit(self) -> None:
-        if self.controller.ask(self.input.text()):
+        tab = self.current
+        if self.controller.ask(self.input.text(), [a.payload for a in tab.images]):
             self.input.clear()
+            tab.images = []
+            self.strip.set_attachments([])
+
+    # ---- attachments and mentions -------------------------------------------------------------------
+    def place_popup(self) -> None:
+        chat_input.place_popup(self.mention_popup, self, self.composer)
+
+    def attach_images(self, images: list) -> None:
+        tab = self.current
+        for image in images:
+            if len(tab.images) >= chat_input.MAX_IMAGES:
+                self.on_message("info", _("At most {n} images per message.", n=chat_input.MAX_IMAGES), tab)
+                break
+            attachment = chat_input.make_attachment(image)
+            if attachment is not None:
+                tab.images.append(attachment)
+        self.strip.set_attachments(tab.images)
+
+    def attach_files(self, paths: list) -> None:
+        self.attach_images([QImage(p) for p in paths])
+
+    def remove_image(self, index: int) -> None:
+        tab = self.current
+        if 0 <= index < len(tab.images):
+            del tab.images[index]
+            self.strip.set_attachments(tab.images)
+
+    def dragEnterEvent(self, e) -> None:
+        if e.mimeData().hasUrls() or e.mimeData().hasImage():
+            e.acceptProposedAction()
 
     # ---- size ----------------------------------------------------------------------------------------
     def available_rect(self):

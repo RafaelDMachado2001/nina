@@ -28,6 +28,32 @@ WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 PERMISSION_TIMEOUT_S = 600
 
 
+def has_content(message) -> bool:
+    """A message is a string, or {"text": str, "images": [{"media_type", "data" (base64)}]}."""
+    if isinstance(message, dict):
+        return bool(str(message.get("text", "")).strip() or message.get("images"))
+    return bool(message and str(message).strip())
+
+
+def query_arg(message):
+    """What `client.query` takes: plain text, or a streamed user message with image blocks."""
+    if not isinstance(message, dict):
+        return message
+    images = message.get("images") or []
+    text = str(message.get("text", ""))
+    if not images:
+        return text
+
+    async def stream():
+        content = [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
+                   for i in images]
+        if text.strip():
+            content.append({"type": "text", "text": text})
+        yield {"type": "user", "message": {"role": "user", "content": content}, "parent_tool_use_id": None,
+               "session_id": "default"}
+    return stream()
+
+
 def available() -> bool:
     return sdk is not None
 
@@ -130,7 +156,7 @@ class Runner:
 
     def send(self, agent_id: str, text: str) -> None:
         agent = self.agents.get(agent_id)
-        if agent is not None and text.strip():
+        if agent is not None and has_content(text):
             self.loop.call_soon_threadsafe(self._enqueue, agent, text)
 
     def interrupt(self, agent_id: str) -> None:
@@ -220,7 +246,7 @@ class Runner:
                 while True:
                     if text:
                         self.emit(agent.id, "status", "working")
-                        await client.query(text)
+                        await client.query(query_arg(text))
                         async for msg in client.receive_response():
                             self._handle(agent, msg)
                     self.emit(agent.id, "status", "idle")

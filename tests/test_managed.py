@@ -44,6 +44,13 @@ class PolicyTest(unittest.TestCase):
     def test_bash_asks_for_confirmation(self):
         self.assertEqual(managed.decide("Bash", {"command": "ls"}, self.reviewer, self.cwd)[0], "ask")
 
+    def test_plain_text_is_still_a_string_and_empty_messages_are_ignored(self):
+        self.assertEqual(managed.query_arg("hi"), "hi")
+        self.assertEqual(managed.query_arg({"text": "hi", "images": []}), "hi")
+        self.assertTrue(managed.has_content({"text": "", "images": [{"data": "x"}]}))
+        self.assertFalse(managed.has_content({"text": " ", "images": []}))
+        self.assertFalse(managed.has_content("  "))
+
     def test_description_masks_secrets_and_is_limited(self):
         text = managed.describe("Bash", {"command": "curl -H 'Authorization: Bearer abcdefghijklmnop1234' x"})
         self.assertNotIn("abcdefghijklmnop1234", text)
@@ -274,6 +281,24 @@ class RunnerTest(unittest.TestCase):
         self.runner.resolve(p["req"], False, "no")
         self.wait_for("result")
         self.assertIsInstance(outcomes["ls"], self.sdk.PermissionResultDeny)
+
+    def test_messages_with_images_are_streamed_as_content_blocks(self):
+        got = {}
+
+        async def script(client):
+            query = client.queries[-1]
+            got["blocks"] = [m async for m in query]
+            yield self.result()
+
+        self.make(script)
+        image = {"media_type": "image/png", "data": "QUJD"}
+        self.runner.start(roles.load_roles()["general"], self.cwd, {"text": "what is this?", "images": [image]})
+        self.wait_for("result")
+        (message,) = got["blocks"]
+        self.assertEqual(message["type"], "user")
+        self.assertEqual(message["message"]["content"][0], {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": "QUJD"}})
+        self.assertEqual(message["message"]["content"][1], {"type": "text", "text": "what is this?"})
 
     def test_interrupt(self):
         async def script(client):

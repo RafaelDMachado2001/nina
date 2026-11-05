@@ -187,6 +187,18 @@ class ChatPermissionTest(ChatControllerTest):
         self.assertEqual(self.runner.resolved, [("r1", True, True), ("r2", True)])
         self.assertIn(("info", "Allowed always: ssh servidor · UPDATE"), self.messages)
 
+    def test_images_go_with_the_message_and_text_alone_stays_a_string(self):
+        c = self.make()
+        self.assertTrue(c.ask("plain"))
+        self.assertEqual(self.runner.started[0]["prompt"], "plain")
+        c.on_event("agent-1", "status", "idle")
+        img = {"media_type": "image/png", "data": "AAAA"}
+        self.assertTrue(c.ask("look", [img]))
+        self.assertEqual(self.runner.sent[-1], ("agent-1", {"text": "look", "images": [img]}))
+        c.on_event("agent-1", "status", "idle")
+        self.assertTrue(c.ask("", [img]))                    # an image without text is fine
+        self.assertFalse(c.ask("", []))
+
     def test_answer_without_a_request_does_nothing(self):
         c = self.make()
         c.ask("hi")
@@ -446,6 +458,80 @@ class ChatBoxTest(IsolatedHome):
         box.set_auto(True)
         self.assertTrue(c.auto.enabled())
         self.assertTrue(box.status.text().endswith("· auto"))
+
+    def test_at_mention_suggests_files_and_completes_them(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        (self.home / "docs").mkdir()
+        (self.home / "docs" / "guide.md").write_text("x")
+        (self.home / "README.md").write_text("x")
+        c, box = self.make()
+        box.input.setText("read @gui")
+        box.input.refresh_popup()
+        self.assertEqual(box.mention_popup.items[0].value, "docs/guide.md")
+        QTest.keyClick(box.input, Qt.Key_Tab)
+        self.assertEqual(box.input.text(), "read @docs/guide.md ")
+        box.input.setText("see @")
+        box.input.refresh_popup()
+        self.assertEqual([s.value for s in box.mention_popup.items], ["docs/", "README.md"])
+        box.mention_popup.step(1)
+        QTest.keyClick(box.input, Qt.Key_Return)             # accepts the suggestion, does not send
+        self.assertEqual(box.input.text(), "see @README.md ")
+        self.assertIsNone(self.runner)
+        box.input.setText("see @do")
+        box.input.refresh_popup()
+        QTest.keyClick(box.input, Qt.Key_Escape)
+        self.assertFalse(box.mention_popup.isVisible())
+        box.input.setText("no mention here")
+        box.input.refresh_popup()
+        self.assertFalse(box.mention_popup.isVisible())
+
+    def test_a_folder_suggestion_keeps_the_mention_open(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        (self.home / "docs").mkdir()
+        (self.home / "docs" / "guide.md").write_text("x")
+        _c, box = self.make()
+        box.input.setText("@doc")
+        box.input.refresh_popup()
+        QTest.keyClick(box.input, Qt.Key_Tab)
+        self.assertEqual(box.input.text(), "@docs/")
+        box.input.refresh_popup()
+        self.assertEqual([s.value for s in box.mention_popup.items], ["docs/guide.md"])
+
+    def test_pasted_image_is_attached_removed_and_sent_with_the_message(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QGuiApplication, QImage
+        from PySide6.QtTest import QTest
+        c, box = self.make()
+        image = QImage(3000, 100, QImage.Format_RGB32)
+        image.fill(QColor("red"))
+        QGuiApplication.clipboard().setImage(image)
+        QTest.keyClick(box.input, Qt.Key_V, Qt.ControlModifier)
+        self.assertEqual(len(box.current.images), 1)
+        self.assertTrue(box.strip.isVisibleTo(box.composer))
+        self.assertEqual(QImage.fromData(__import__("base64").b64decode(box.current.images[0].payload["data"])).width(), 1568)
+        QTest.keyClick(box.input, Qt.Key_V, Qt.ControlModifier)
+        box.remove_image(1)
+        box.input.setText("what is this? @~/x.md")
+        box.submit()
+        sent = self.runner.started[0]["prompt"]
+        self.assertEqual(sent["images"][0]["media_type"], "image/png")
+        self.assertTrue(sent["text"].startswith("what is this? @/") and "~" not in sent["text"])
+        self.assertEqual((box.current.images, box.input.text(), box.strip.isVisible()), ([], "", False))
+        self.assertEqual([k for k, _t in box.entries], ["user", "image"])
+        self.assertIn("<img", box.log.toHtml())
+
+    def test_an_image_alone_can_be_sent_and_the_limit_is_five(self):
+        from PySide6.QtGui import QColor, QImage
+        c, box = self.make()
+        image = QImage(10, 10, QImage.Format_RGB32)
+        image.fill(QColor("blue"))
+        box.attach_images([image] * 7)
+        self.assertEqual(len(box.current.images), 5)
+        box.submit()
+        self.assertEqual(len(self.runner.started[0]["prompt"]["images"]), 5)
+        self.assertEqual(box.current.title, "Image")
 
     def test_permission_request_opens_a_hidden_window(self):
         c, box = self.make()

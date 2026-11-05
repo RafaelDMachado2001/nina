@@ -12,6 +12,11 @@ class ThemeTest(unittest.TestCase):
     def test_both_themes_define_the_same_tokens(self):
         self.assertEqual(set(th.THEMES["dark"]), set(th.THEMES["light"]))
 
+    def test_image_message_html(self):
+        out = th.image_html('nina-image:1"x', "dark")
+        self.assertIn('<img src="nina-image:1&quot;x">', out)
+        self.assertIn(th.THEMES["dark"]["user_bg"], out)
+
     def test_unknown_theme_falls_back_to_dark(self):
         self.assertIs(th.tokens("nope"), th.THEMES["dark"])
 
