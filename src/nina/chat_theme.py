@@ -142,6 +142,19 @@ QPushButton#AccountChip:hover {{ background: {t['surf3']}; color: {t['text']}; }
 QPushButton#AccountChip:disabled {{ color: {t['text2']}; border-color: transparent; }}
 QPushButton#AccountChip:focus {{ border: 1px solid {t['accent']}; padding: 0 8px; }}
 
+QLabel#InfoBar {{
+  background: {t['surf']}; border-top: 1px solid {t['border']}; padding: 0 12px;
+  min-height: 24px; max-height: 24px; font-size: 11px;
+}}
+QFrame#InfoPopup {{ background: {t['surf']}; border: 1px solid {t['border_strong']}; }}
+QFrame#InfoPopup QLabel {{ background: transparent; color: {t['text']}; font-size: 12px; }}
+
+QWidget#HistoryView {{ background: {t['bg']}; }}
+QListWidget#HistoryList {{ background: {t['bg']}; border: 1px solid {t['border']}; outline: none; }}
+QListWidget#HistoryList::item {{ border-bottom: 1px solid {t['border']}; }}
+QListWidget#HistoryList::item:hover {{ background: {t['surf']}; }}
+QListWidget#HistoryList::item:selected {{ background: {t['surf3']}; border-left: 3px solid {t['accent']}; }}
+
 QWidget#TabRow {{ background: {t['surf']}; border-bottom: 1px solid {t['border']}; }}
 QTabBar {{ background: transparent; }}
 QTabBar::tab {{

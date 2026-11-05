@@ -249,6 +249,7 @@ class Runner:
                         await client.query(query_arg(text))
                         async for msg in client.receive_response():
                             self._handle(agent, msg)
+                    await self._report_context(agent, client)
                     self.emit(agent.id, "status", "idle")
                     text = await agent.queue.get()      # None = close
                     if text is None:
@@ -261,6 +262,15 @@ class Runner:
             agent.client = None
             self.emit(agent.id, "status", "closed")
 
+    async def _report_context(self, agent: _Agent, client) -> None:
+        """How full the context window is after a turn (what /context shows). Best effort: never breaks the chat."""
+        try:
+            u = await client.get_context_usage()
+            self.emit(agent.id, "context", {"tokens": int(u["totalTokens"]), "max": int(u["maxTokens"]),
+                                            "model": str(u.get("model") or "")})
+        except Exception:
+            pass
+
     def _handle(self, agent: _Agent, msg) -> None:
         kind = type(msg).__name__
         if kind == "SystemMessage" and getattr(msg, "subtype", "") == "init":
@@ -268,7 +278,18 @@ class Runner:
             if sid:
                 agent.session_id = sid
                 self.emit(agent.id, "session", sid)
+            if (getattr(msg, "data", None) or {}).get("model"):
+                self.emit(agent.id, "model", msg.data["model"])
+        elif kind == "RateLimitEvent":
+            info = msg.rate_limit_info
+            self.emit(agent.id, "ratelimit", {
+                "status": info.status, "type": info.rate_limit_type, "utilization": info.utilization,
+                "resets_at": info.resets_at, "windows": (info.raw or {}).get("unifiedWindows") or {}})
         elif kind == "AssistantMessage":
+            usage = getattr(msg, "usage", None) or {}
+            new = sum(int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))
+            if new:
+                self.emit(agent.id, "usage", new)
             for block in msg.content:
                 block_kind = type(block).__name__
                 if block_kind == "TextBlock" and block.text.strip():

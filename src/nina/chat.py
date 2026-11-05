@@ -7,15 +7,18 @@ dialog, exactly like the other managed agents.
 """
 import base64
 import json
+import html as html_lib
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPoint, QPointF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QImage, QTextDocument, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QImage, QTextDocument, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -29,7 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina import chat_input, chat_theme, config, mentions
+from nina import chat_input, chat_theme, chathistory, chatinfo, config, mentions
+from nina.history_view import HistoryView
 from nina.agents import managed
 from nina.agents import roles as roles_mod
 from nina.i18n import _
@@ -86,8 +90,10 @@ def load_tabs(path: Path | None = None) -> dict:
         if isinstance(tid, str) and re.fullmatch(r"[0-9a-z]{1,16}", tid) and tid not in seen:
             seen.add(tid)
             account = t.get("account")
+            conv = t.get("conv")
             tabs.append({"id": tid, "title": str(t.get("title") or "")[:60],
-                         "account": account if isinstance(account, str) else None})
+                         "account": account if isinstance(account, str) else None,
+                         "conv": conv if isinstance(conv, str) and re.fullmatch(r"[0-9a-z]{1,16}", conv) else None})
     return {"tabs": tabs, "active": data.get("active")} if tabs else {}
 
 
@@ -121,8 +127,10 @@ class ChatController(QObject):
     permission_asked = Signal(dict)   # {"req", "tool", "detail", "remember"}: the window shows Allow / Deny
     permission_cleared = Signal()
     account_changed = Signal()
+    info_changed = Signal()           # model, context, usage or cost changed
     finished = Signal()               # an answer is complete
     _event = Signal(str, str, object)   # from the Runner's thread, delivered on the UI thread
+    RATE = {}                         # account -> last rate-limit report: windows belong to the account, not to a chat
 
     def __init__(self, context, runner_factory=None, path: Path | None = None, parent=None, tab_id: str = "main",
                  auto=None):
@@ -144,12 +152,26 @@ class ChatController(QObject):
         self.current_req = None
         self.last_user = ""
         self.last_images = []
+        self.info = self.fresh_info()
+        self.session = ""                 # Claude session id of this conversation, kept for the history
+        self.cwd = None                   # folder the conversation runs in (None: the default folder)
+        self._agent_cost = 0.0
         self._event.connect(self.on_event)
 
     # ---- API (UI thread) ---------------------------------------------------------------------------
     @property
     def busy(self) -> bool:
         return self.status in BUSY
+
+    @staticmethod
+    def fresh_info() -> dict:
+        return {"model": "", "ctx_tokens": 0, "ctx_max": 0, "cost": 0.0, "tokens": 0}
+
+    def rate(self) -> dict | None:
+        return self.RATE.get(self.effective_account())
+
+    def folder(self) -> str:
+        return self.cwd or self.context().get("default_dir", "") or ""
 
     def effective_account(self) -> str:
         return self.context().get("account", "") or "" if self.account is None else self.account
@@ -167,6 +189,9 @@ class ChatController(QObject):
             self.drop_permissions()
             self.set_status("none")
         save_saved({}, self.path)
+        self.session = ""
+        self.info = self.fresh_info()
+        self.info_changed.emit()
         if had_conversation:
             self.message.emit("info", _("Account changed to {account}: the next message starts a new Claude session.",
                                         account=self.effective_account() or _("default")))
@@ -211,9 +236,14 @@ class ChatController(QObject):
         if saved.get("account", account) != account:      # a session of another account cannot be resumed here
             saved = {}
         self.resuming = bool(saved)
+        # a session only resumes from the folder it ran in; a chat keeps its folder when only the account changes
+        cwd = next((c for c in (saved.get("cwd"), self.cwd) if c and Path(c).is_dir()), ctx["default_dir"])
+        self.cwd = cwd
+        self.session = saved.get("session", "")
         self.role = self.role_for_chat()
         self.set_status("starting")
-        self.agent_id = self.runner.start(self.role, ctx["default_dir"], prompt, account, config_dir,
+        self._agent_cost = 0.0                 # the CLI reports cost cumulatively per agent process
+        self.agent_id = self.runner.start(self.role, cwd, prompt, account, config_dir,
                                           resume=saved.get("session"))
 
     def retry(self) -> bool:
@@ -232,6 +262,9 @@ class ChatController(QObject):
         self.agent_id = None
         self.drop_permissions()
         save_saved({}, self.path)
+        self.session, self.cwd = "", None
+        self.info = self.fresh_info()
+        self.info_changed.emit()
         self.set_status("none")
         self.message.emit("reset", "")
 
@@ -256,15 +289,39 @@ class ChatController(QObject):
                 self.resuming = False
                 self.finished.emit()
         elif kind == "session":
-            ctx = self.context()
-            save_saved({"session": payload, "account": self.effective_account(), "cwd": ctx["default_dir"]}, self.path)
+            self.session = payload
+            save_saved({"session": payload, "account": self.effective_account(), "cwd": self.folder()}, self.path)
+            self.info_changed.emit()
         elif kind == "text":
             self.message.emit("assistant", payload)
         elif kind == "tool":
             self.message.emit("tool", f"{payload['name']}: {payload['summary']}")
         elif kind == "denied":
             self.message.emit("denied", _("Blocked ({tool}): {why}", tool=payload["tool"], why=payload["why"]))
+        elif kind == "model":
+            self.info["model"] = str(payload)
+            self.info_changed.emit()
+        elif kind == "context":
+            self.info.update(ctx_tokens=payload["tokens"], ctx_max=payload["max"])
+            if payload.get("model"):
+                self.info["model"] = payload["model"]
+            self.info_changed.emit()
+        elif kind == "usage":
+            self.info["tokens"] += int(payload)
+            chatinfo.add_day(tokens=int(payload))
+            self.info_changed.emit()
+        elif kind == "ratelimit":
+            self.RATE[self.effective_account()] = payload
+            self.info_changed.emit()
         elif kind == "result":
+            cost = payload.get("cost")
+            if isinstance(cost, (int, float)):
+                delta = cost - self._agent_cost if cost >= self._agent_cost else cost
+                self._agent_cost = cost
+                if delta > 0:
+                    self.info["cost"] += delta
+                    chatinfo.add_day(cost=delta)
+                self.info_changed.emit()
             if payload.get("error") or payload.get("errors"):
                 self.message.emit("error", "; ".join(payload.get("errors") or [_("error")]))
         elif kind == "error":
@@ -451,12 +508,28 @@ class DragHeader(QWidget):
         super().mouseDoubleClickEvent(e)
 
 
+class InfoBar(QLabel):
+    """The thin line under the composer. A click opens the details."""
+    clicked = Signal()
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
+
+
 class ChatTab:
     """One open chat: its controller, the messages shown for it, and the text typed but not sent yet."""
-    def __init__(self, controller: "ChatController", title: str = ""):
+    def __init__(self, controller: "ChatController", title: str = "", conv: str | None = None, entries=None,
+                 created: float | None = None):
         self.controller = controller
         self.title = title
-        self.entries = []                     # (kind, text), kept to re-render when the theme or the tab changes
+        self.conv = conv or chathistory.new_id()      # id of this conversation in the history
+        self.created = created or time.time()
+        self.dirty = False                    # messages not yet written to the history
+        self.lazy = False                     # reopened tab whose messages are still on disk (read when first shown)
+        self.save_timer = None
+        self.entries = list(entries or [])    # (kind, text), kept to re-render when the theme or the tab changes
         self.draft = ""
         self.images = []                      # chat_input.Attachment: pasted images not sent yet
         self.attention = False                # a background chat needs a permission answer
@@ -470,15 +543,18 @@ class ChatBox(QWidget):
     SIZES = {"normal": (400, 520), "large": (680, 800)}   # "normal" is the default; "maximized" fills the screen
 
     def __init__(self, controller: ChatController, theme: str = "dark", on_theme=None, factory=None, saved=None,
-                 tabs_path: Path | None = None):
+                 tabs_path: Path | None = None, history_dir: Path | None = None):
         """`factory(tab_id)` builds the controller of a new chat; `saved` is `load_tabs()` of the last run."""
         super().__init__()
         self.controller = controller          # the chat on screen
         self.factory = factory
         self.tabs_path = tabs_path
+        self.history_dir = history_dir
+        self.in_history = False
         self.theme = theme if theme in chat_theme.THEMES else "dark"
         self.on_theme = on_theme
         first = ChatTab(controller)
+        self.setup_save(first)
         self.tabs = [first]
         self.current = first
         self.entries = first.entries
@@ -569,6 +645,11 @@ class ChatBox(QWidget):
         self.body = QStackedWidget()
         self.body.addWidget(self.empty)
         self.body.addWidget(self.log)
+        self.history = HistoryView(history_dir)
+        self.history.resume.connect(self.open_from_history)
+        self.history.back.connect(self.hide_history)
+        self.history.deleted.connect(lambda _c: None)
+        self.body.addWidget(self.history)
 
         self.thinking = ThinkingDots()
 
@@ -578,7 +659,7 @@ class ChatBox(QWidget):
         self.composer.setAttribute(Qt.WA_StyledBackground, True)
         self.input = chat_input.MentionInput()
         self.input.setPlaceholderText(_("Message NINA... (@ for files)"))
-        self.input.cwd = lambda: (self.controller.context() or {}).get("default_dir") or os.getcwd()
+        self.input.cwd = lambda: self.controller.folder() or os.getcwd()
         self.mention_popup = chat_input.SuggestionPopup(self)
         self.input.popup = self.mention_popup
         self.mention_popup.shown.connect(self.place_popup)
@@ -666,6 +747,7 @@ class ChatBox(QWidget):
         self.tabbar.setFocusPolicy(Qt.NoFocus)
         self.tabbar.setIconSize(QSize(8, 8))
         self.tabbar.currentChanged.connect(self.on_tab_changed)
+        self.tabbar.tabBarClicked.connect(lambda _i: self.hide_history())
         self.add_btn = self.icon_button(_("New chat"))
         self.add_btn.clicked.connect(self.new_tab)
         self.tabrow = QWidget()
@@ -684,6 +766,18 @@ class ChatBox(QWidget):
         layout.addWidget(self.thinking)
         layout.addWidget(self.composer)
         layout.addWidget(self.sheet)
+        self.infobar = InfoBar()
+        self.infobar.setObjectName("InfoBar")
+        self.infobar.setTextFormat(Qt.RichText)
+        self.infobar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.infobar.setCursor(Qt.PointingHandCursor)
+        self.infobar.setToolTip(_("Click for details"))
+        self.infobar.clicked.connect(self.show_details)
+        layout.addWidget(self.infobar)
+        self.popup = None
+        self.clock_timer = QTimer(self)
+        self.clock_timer.timeout.connect(self.update_infobar)
+        self.clock_timer.start(20000)
         self.sheet.hide()
 
         self.grip = QSizeGrip(self)                  # resize from the bottom-right corner
@@ -691,6 +785,7 @@ class ChatBox(QWidget):
         self.grip.setStyleSheet("background: transparent;")
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_tab)
         QShortcut(QKeySequence("Ctrl+W"), self, activated=self.close_current)
+        QShortcut(QKeySequence("Ctrl+H"), self, activated=self.show_history)
         QShortcut(QKeySequence("Alt+P"), self, activated=self.allow_shortcut)
         for keys, step in (("Ctrl+PgDown", 1), ("Ctrl+Tab", 1), ("Ctrl+PgUp", -1), ("Ctrl+Shift+Tab", -1)):
             QShortcut(QKeySequence(keys), self, activated=lambda step=step: self.step_tab(step))
@@ -712,23 +807,46 @@ class ChatBox(QWidget):
         c.permission_asked.connect(lambda req, tab=tab: self.on_permission(req, tab))
         c.permission_cleared.connect(lambda tab=tab: self.on_tab_state(tab))
         c.account_changed.connect(lambda tab=tab: self.on_account_changed(tab))
+        c.info_changed.connect(lambda tab=tab: self.on_info_changed(tab))
 
     def restore(self, saved: dict) -> None:
         """Reopen the chats of the last run (empty on screen, but each one resumes its Claude session)."""
         entries = saved.get("tabs") or []
         if not entries or entries[0]["id"] != getattr(self.controller, "tab_id", "main") or self.factory is None:
             return
-        self.tabs[0].title = entries[0]["title"]
-        self.tabs[0].controller.account = entries[0].get("account")
+        self.revive(self.tabs[0], entries[0])
         for e in entries[1:]:
-            tab = self.add_tab(self.factory(e["id"]), e["title"], select=False)
-            tab.controller.account = e.get("account")
+            self.revive(self.add_tab(self.factory(e["id"]), e["title"], select=False), e)
         by_id = {getattr(t.controller, "tab_id", ""): i for i, t in enumerate(self.tabs)}
         self.decorate_all()
         self.tabbar.setCurrentIndex(by_id.get(saved.get("active"), 0))
 
-    def add_tab(self, controller: ChatController, title: str = "", select: bool = True) -> ChatTab:
-        tab = ChatTab(controller, title)
+    def revive(self, tab: ChatTab, saved: dict) -> None:
+        """Give a reopened tab back its title, account and the messages kept in the history."""
+        tab.title = saved["title"]
+        tab.controller.account = saved.get("account")
+        meta = chathistory.load_meta(saved.get("conv") or "", self.history_dir)
+        if meta is not None:
+            tab.conv, tab.created = meta["id"], meta["created"] or tab.created
+            tab.title = tab.title or meta["title"]
+            tab.controller.session = meta["session"]
+            tab.controller.cwd = meta["cwd"] or None
+            tab.controller.info.update(cost=meta["cost"], tokens=meta["tokens"])
+            tab.lazy = True                    # the messages are read only when this tab is opened
+        elif saved.get("conv"):
+            tab.conv = saved["conv"]
+
+    def ensure_loaded(self, tab: ChatTab) -> None:
+        if tab.lazy:
+            tab.lazy = False
+            rec = chathistory.load(tab.conv, self.history_dir)
+            if rec is not None:
+                tab.entries[:0] = [tuple(e) for e in rec["entries"]]
+
+    def add_tab(self, controller: ChatController, title: str = "", select: bool = True, conv: str | None = None,
+                entries=None, created: float | None = None) -> ChatTab:
+        tab = ChatTab(controller, title, conv, entries, created)
+        self.setup_save(tab)
         self.tabs.append(tab)
         self.attach(tab)
         self.tabbar.blockSignals(True)
@@ -747,8 +865,9 @@ class ChatBox(QWidget):
             self.input.setFocus()
 
     def close_tab(self, tab: ChatTab) -> None:
-        """Close a chat: its agent stops and its saved session is forgotten. The last one is only cleared."""
+        """Close a chat: it stays in the history (you can resume it), its agent stops. The last one is only cleared."""
         c = tab.controller
+        self.save_now(tab)
         c.reset()
         if len(self.tabs) == 1:
             return
@@ -789,6 +908,8 @@ class ChatBox(QWidget):
             self.tabbar.blockSignals(True)
             self.tabbar.setCurrentIndex(i)
             self.tabbar.blockSignals(False)
+        self.in_history = False
+        self.ensure_loaded(tab)
         self.input.setText(tab.draft)
         self.strip.set_attachments(tab.images)
         self.render_all()
@@ -841,8 +962,8 @@ class ChatBox(QWidget):
     def save_tab_list(self) -> None:
         if self.factory is None:
             return
-        save_tabs({"tabs": [{"id": getattr(t.controller, "tab_id", "main"), "title": t.title, "account": t.controller.account}
-                    for t in self.tabs],
+        save_tabs({"tabs": [{"id": getattr(t.controller, "tab_id", "main"), "title": t.title, "account": t.controller.account,
+                    "conv": t.conv} for t in self.tabs],
                    "active": getattr(self.controller, "tab_id", "main")}, self.tabs_path)
 
     # ---- theme -----------------------------------------------------------------------------------
@@ -882,6 +1003,9 @@ class ChatBox(QWidget):
         new.setShortcut(QKeySequence("Ctrl+N"))
         new.triggered.connect(self.new_tab)
         new.setEnabled(self.factory is not None)
+        hist = menu.addAction(_("History"))
+        hist.setShortcut(QKeySequence("Ctrl+H"))
+        hist.triggered.connect(self.show_history)
         close = menu.addAction(_("Close chat"))
         close.setShortcut(QKeySequence("Ctrl+W"))
         close.triggered.connect(self.close_current)
@@ -917,23 +1041,31 @@ class ChatBox(QWidget):
         tab = tab or self.current
         shown = tab is self.current
         if kind == "reset":
+            tab.lazy = False
             tab.entries.clear()
             tab.title = ""
+            tab.dirty = False
+            tab.save_timer.stop()
+            tab.conv, tab.created = chathistory.new_id(), time.time()      # whatever comes next is a new conversation
             self.decorate(tab)
             self.save_tab_list()
             if shown:
                 self.log.clear()
-                self.body.setCurrentWidget(self.empty)
+                if not self.in_history:
+                    self.body.setCurrentWidget(self.empty)
             return
         if kind == "image":
             text = chat_input.thumbnail_b64(text)        # keep a small copy: the full image went to the agent
+        self.ensure_loaded(tab)
         tab.entries.append((kind, text))
+        self.schedule_save(tab)
         if kind in ("user", "image") and not tab.title:
             tab.title = title_from(text) if kind == "user" else _("Image")
             self.decorate(tab)
             self.save_tab_list()
         if shown:
-            self.body.setCurrentWidget(self.log)
+            if not self.in_history:
+                self.body.setCurrentWidget(self.log)
             self.append(kind, text)
 
     def html_for(self, kind: str, text: str) -> str:
@@ -989,6 +1121,7 @@ class ChatBox(QWidget):
         busy = self.controller.busy
         asking = self.controller.current_req is not None
         self.update_account_button()
+        self.update_infobar()
         self.input.setEnabled(not busy)
         self.send_btn.setEnabled(not busy)
         self.stop_btn.setVisible(self.controller.status == "working")
@@ -997,7 +1130,7 @@ class ChatBox(QWidget):
                 self.thinking.start()
         else:
             self.thinking.stop()
-        self.composer.setVisible(not asking)
+        self.composer.setVisible(not asking and not self.in_history)
         self.sheet.setVisible(asking)
         if asking:
             self.deny_btn.setFocus()
@@ -1067,10 +1200,150 @@ class ChatBox(QWidget):
         if e.mimeData().hasUrls() or e.mimeData().hasImage():
             e.acceptProposedAction()
 
+    def dropEvent(self, e) -> None:
+        """Image files become attachments; any other file or folder becomes an @mention in the field."""
+        mime = e.mimeData()
+        cwd = os.path.abspath(self.controller.folder() or os.getcwd())
+        images, mention = [], []
+        for url in mime.urls():
+            path = url.toLocalFile()
+            if not path:
+                continue
+            if chat_input.is_image_file(path):
+                images.append(path)
+            else:
+                inside = os.path.commonpath([os.path.abspath(path), cwd]) == cwd
+                shown = os.path.relpath(path, cwd) if inside else path
+                mention.append(mentions.format_mention(shown + ("/" if os.path.isdir(path) else "")))
+        if mime.hasImage() and not mime.hasUrls():
+            self.attach_images([QImage(mime.imageData())])
+        self.attach_files(images)
+        if mention:
+            self.input.insert(" ".join(mention) + " ")
+            self.input.setFocus()
+        e.acceptProposedAction()
+
     # ---- size ----------------------------------------------------------------------------------------
     def available_rect(self):
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         return screen.availableGeometry()
+
+    # ---- history ---------------------------------------------------------------------------------------
+    def setup_save(self, tab: ChatTab) -> None:
+        tab.save_timer = QTimer(self)
+        tab.save_timer.setSingleShot(True)
+        tab.save_timer.timeout.connect(lambda tab=tab: self.save_now(tab))
+
+    def snapshot(self, tab: ChatTab) -> dict:
+        c = tab.controller
+        return {"id": tab.conv, "title": tab.title, "account": c.effective_account(), "cwd": c.folder(),
+                "session": c.session, "created": tab.created, "updated": time.time(), "cost": c.info["cost"],
+                "tokens": c.info["tokens"], "entries": tab.entries}
+
+    def schedule_save(self, tab: ChatTab) -> None:
+        """Write the conversation to the history shortly after it changes (messages come in bursts)."""
+        if tab.entries:
+            tab.dirty = True
+            tab.save_timer.start(800)
+
+    def save_now(self, tab: ChatTab) -> None:
+        tab.save_timer.stop()
+        if tab.entries:
+            chathistory.save(self.snapshot(tab), self.history_dir)
+        tab.dirty = False
+
+    def flush(self) -> None:
+        for tab in self.tabs:
+            if tab.dirty:
+                self.save_now(tab)
+
+    def show_history(self) -> None:
+        for tab in self.tabs:
+            if tab.dirty:
+                self.save_now(tab)                # the list must include what was just said
+        self.in_history = True
+        self.history.refresh({t.conv for t in self.tabs}, chat_theme.tokens(self.theme))
+        self.body.setCurrentWidget(self.history)
+        self.refresh_state()
+
+    def hide_history(self) -> None:
+        if not self.in_history:
+            return
+        self.in_history = False
+        self.body.setCurrentWidget(self.log if self.current.entries else self.empty)
+        self.refresh_state()
+
+    def open_from_history(self, meta: dict) -> None:
+        """Open a saved conversation in a tab, with its messages, account and folder, ready to carry on. This is the
+        moment its messages are read from disk."""
+        for tab in self.tabs:
+            if tab.conv == meta["id"]:
+                self.select(tab)                  # already open: just go there
+                return
+        rec = chathistory.load(meta["id"], self.history_dir)
+        if self.factory is None or rec is None:
+            return
+        controller = self.factory(new_tab_id())
+        controller.account = rec["account"] or None
+        controller.cwd = rec["cwd"] or None
+        controller.session = rec["session"]
+        controller.info.update(cost=rec["cost"], tokens=rec["tokens"])
+        if rec["session"]:
+            save_saved({"session": rec["session"], "account": rec["account"], "cwd": rec["cwd"]}, controller.path)
+        self.add_tab(controller, rec["title"], conv=rec["id"], entries=[tuple(e) for e in rec["entries"]],
+                     created=rec["created"])
+
+    # ---- info line -----------------------------------------------------------------------------------
+    def info_context(self):
+        c = self.controller
+        folder = c.folder()
+        return folder, chatinfo.git_branch(folder), c.info, c.rate()
+
+    def update_infobar(self) -> None:
+        if not self.isVisible():
+            return
+        t = chat_theme.tokens(self.theme)
+        folder, branch, info, rate = self.info_context()
+        now = datetime.now()
+        fm = QFontMetrics(self.infobar.font())
+        avail = max(40, self.infobar.width() - 24)
+        items = []
+        for level in range(chatinfo.MAX_LEVEL + 1):
+            items = chatinfo.compose(level, folder, branch, info, rate, now)
+            if fm.horizontalAdvance(" · ".join(text for _k, text, _s in items)) <= avail:
+                break
+        colors = {"ok": t["text2"], "warn": t["warn"], "err": t["err_text"]}
+        sep = f' <span style="color:{t["border_strong"]}">·</span> '
+        self.infobar.setText(sep.join(f'<span style="color:{colors[sev]}">{html_lib.escape(text)}</span>'
+                                      for _k, text, sev in items))
+
+    def details_html(self) -> str:
+        t = chat_theme.tokens(self.theme)
+        folder, branch, info, rate = self.info_context()
+        rows = chatinfo.details(config.short_path(folder) if folder else "", branch, self.controller.effective_account(),
+                                info, rate, chatinfo.load_day(), datetime.now())
+        body = "".join(f'<tr><td style="color:{t["text2"]}; padding-right:12px">{html_lib.escape(k)}</td>'
+                       f'<td>{html_lib.escape(v)}</td></tr>' for k, v in rows)
+        return f'<table cellspacing="3">{body}</table>'
+
+    def show_details(self) -> None:
+        if self.popup is not None:
+            self.popup.close()
+        pop = QFrame(self, Qt.Popup)
+        pop.setObjectName("InfoPopup")
+        label = QLabel(self.details_html())
+        label.setTextFormat(Qt.RichText)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay = QVBoxLayout(pop)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.addWidget(label)
+        pop.setFixedWidth(min(self.width() - 16, 380))
+        pop.adjustSize()
+        top_left = self.infobar.mapToGlobal(QPoint(8, 0))
+        pop.move(top_left.x(), top_left.y() - pop.height() - 4)
+        self.popup = pop
+        pop.show()
 
     # ---- account of this chat ------------------------------------------------------------------------
     def update_account_button(self) -> None:
@@ -1079,7 +1352,13 @@ class ChatBox(QWidget):
         self.account_btn.setToolTip(_("Account for this chat") + f": {name}")
         self.account_btn.setEnabled(not self.controller.busy)
 
+    def on_info_changed(self, tab: ChatTab) -> None:
+        self.schedule_save(tab)
+        if tab is self.current:
+            self.update_infobar()
+
     def on_account_changed(self, tab: ChatTab) -> None:
+        self.schedule_save(tab)
         self.save_tab_list()
         if tab is self.current:
             self.update_account_button()
@@ -1155,8 +1434,13 @@ class ChatBox(QWidget):
         if g.intersects(a.adjusted(-margin, -margin, margin, margin)) and g.top() < a.top():
             self.move(self.x(), self.y() - (g.bottom() - (a.top() - margin)))
 
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        self.update_infobar()
+
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
+        self.update_infobar()
         self.grip.move(self.width() - self.grip.width() - 1, self.height() - self.grip.height() - 1)
         self.grip.raise_()
 
@@ -1165,6 +1449,8 @@ class ChatBox(QWidget):
         if e.key() == Qt.Key_Escape:
             if asking:
                 self.controller.answer(False)      # Esc = Deny
+            elif self.in_history:
+                self.hide_history()
             else:
                 self.hide()
             return

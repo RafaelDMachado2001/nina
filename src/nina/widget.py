@@ -91,6 +91,7 @@ class Nina(QWidget):
         """Stop the animation and release the agent registry (called when the application quits)."""
         self.timer.stop()
         if self.chat_box is not None:
+            self.chat_box.flush()
             for tab in self.chat_box.tabs:
                 tab.controller.shutdown()
         if self.agents is not None:
@@ -624,6 +625,9 @@ class Nina(QWidget):
             QMessageBox.information(self, APP_NAME, _("Talking to NINA needs managed agents: install the 'agents' extra."))
             return False
         saved = chat.load_tabs()
+        days = self.cfg.get("history_keep_days", 0)
+        if isinstance(days, int) and days > 0:        # optional: forget conversations unused for this many days
+            chat.chathistory.prune(days, keep={t.get("conv") for t in saved.get("tabs", [])})
         first = saved["tabs"][0]["id"] if saved else "main"
         self.chat_box = chat.ChatBox(self.make_chat_controller(first), self.cfg.get("chat_theme", "dark"),
                                      self.save_chat_theme, factory=self.make_chat_controller, saved=saved)

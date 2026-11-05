@@ -2,7 +2,7 @@ import unittest
 
 from tests.support import IsolatedHome  # noqa: F401  (sets up the offscreen Qt application)
 
-from nina import chat
+from nina import chat, chathistory
 
 
 class FakeRunner:
@@ -125,6 +125,25 @@ class ChatControllerTest(IsolatedHome):
         self.assertIn(("reset", ""), self.messages)
         c.ask("fresh")
         self.assertIsNone(self.runner.started[1]["resume"])
+
+    def test_events_feed_model_context_usage_and_cost(self):
+        c = self.make(account="work")
+        changed = []
+        c.info_changed.connect(lambda: changed.append(1))
+        c.ask("hi")
+        c.on_event("agent-1", "model", "claude-sonnet-5-5")
+        c.on_event("agent-1", "usage", 1000)
+        c.on_event("agent-1", "context", {"tokens": 5000, "max": 200000, "model": "claude-sonnet-5-5"})
+        c.on_event("agent-1", "result", {"cost": 0.01, "error": False})
+        c.on_event("agent-1", "result", {"cost": 0.025, "error": False})      # the CLI reports cost cumulatively
+        self.assertEqual(c.info, {"model": "claude-sonnet-5-5", "ctx_tokens": 5000, "ctx_max": 200000,
+                                  "cost": 0.025, "tokens": 1000})
+        self.assertTrue(changed)
+        c.on_event("agent-1", "ratelimit", {"windows": {"five_hour": {"utilization": 0.4}}})
+        self.assertEqual(c.rate()["windows"]["five_hour"]["utilization"], 0.4)     # kept per account
+        self.assertIsNone(self.make(account="other").rate())
+        c.reset()
+        self.assertEqual(c.info["tokens"], 0)
 
     def test_account_and_role_come_from_the_context(self):
         (self.accounts / "work").mkdir(parents=True)
@@ -272,6 +291,7 @@ class ChatBoxTest(IsolatedHome):
             return self.runner
 
         self.ctx, self.factory_fn = ctx, factory
+        self.hist = self.home / "history"
         self.runners = []
 
         def new_controller(tab_id):
@@ -283,7 +303,8 @@ class ChatBoxTest(IsolatedHome):
                                        tab_id=tab_id)
 
         c = chat.ChatController(lambda: ctx, runner_factory=factory, path=self.home / "chat.json")
-        box = chat.ChatBox(c, theme, on_theme, factory=new_controller, tabs_path=self.home / "chats.json")
+        box = chat.ChatBox(c, theme, on_theme, factory=new_controller, tabs_path=self.home / "chats.json",
+                          history_dir=self.hist)
         box.show()
         self.addCleanup(box.close)
         return c, box
@@ -397,6 +418,91 @@ class ChatBoxTest(IsolatedHome):
         self.assertEqual([t["account"] for t in saved["tabs"]], ["work", None])
         c1.set_status("working")
         self.assertFalse(box.account_btn.isEnabled())
+
+    def test_info_line_shows_folder_model_context_and_clock(self):
+        c, box = self.make()
+        c.info.update(model="claude-sonnet-5-5", ctx_tokens=26000, ctx_max=1000000)
+        c.info_changed.emit()
+        text = box.infobar.text()
+        for part in ("Sonnet 5.5", "ctx 3%"):
+            self.assertIn(part, text)
+        self.assertRegex(text, r"\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M")
+        box.infobar.setFixedWidth(230)                               # narrow: the clock goes first
+        box.update_infobar()
+        self.assertNotRegex(box.infobar.text(), r"[AP]M")
+        self.assertIn("ctx 3%", box.infobar.text())
+        self.assertIn("Sonnet 5.5", box.details_html())
+
+    def test_conversations_are_saved_and_closing_a_chat_keeps_it_in_the_history(self):
+        c1, box = self.make()
+        c1.ask("fix the login bug")
+        c1.on_event("agent-1", "session", "sess-1")
+        c1.on_event("agent-1", "text", "The token expires.")
+        box.new_tab()                                     # the old chat goes to the background
+        box.flush()
+        rec = chathistory.load(chathistory.list_meta(self.hist)[0]["id"], self.hist)
+        self.assertEqual((rec["title"], rec["session"], rec["cwd"]), ("fix the login bug", "sess-1", str(self.home)))
+        self.assertEqual([k for k, _t in rec["entries"]], ["user", "assistant"])
+        box.close_tab(box.tabs[0])                        # closing archives instead of forgetting
+        self.assertEqual(len(box.tabs), 1)
+        self.assertEqual(chathistory.list_meta(self.hist)[0]["session"], "sess-1")
+
+    def test_closing_the_last_chat_starts_a_new_conversation_and_keeps_the_old_one(self):
+        c1, box = self.make()
+        c1.ask("first topic")
+        old = box.tabs[0].conv
+        box.close_current()
+        self.assertNotEqual(box.tabs[0].conv, old)
+        self.assertEqual([r["id"] for r in chathistory.list_meta(self.hist)], [old])
+        c1.ask("second topic")
+        box.flush()
+        self.assertEqual(len(chathistory.list_meta(self.hist)), 2)
+
+    def test_resuming_from_the_history_opens_a_tab_with_messages_account_and_session(self):
+        c1, box = self.make()
+        rec = {"id": "old1", "title": "Old chat", "account": "work", "cwd": str(self.home), "session": "sess-9",
+               "created": 1.0, "updated": 2.0, "cost": 0.3, "tokens": 700,
+               "entries": [["user", "remember the blue one"], ["assistant", "Noted."]]}
+        chathistory.save(rec, self.hist)
+        box.show_history()
+        self.assertTrue(box.in_history)
+        self.assertFalse(box.composer.isVisible())
+        self.assertEqual(box.history.list.count(), 1)
+        box.history.resume_selected()
+        self.assertFalse(box.in_history)
+        self.assertEqual((box.tabbar.count(), box.tabbar.tabText(1)), (2, "Old chat"))
+        self.assertIn("remember the blue one", box.log.toPlainText())
+        c = box.controller
+        self.assertEqual((c.account, c.session, c.info["cost"]), ("work", "sess-9", 0.3))
+        c.ask("and the red one?")                         # the next message resumes the saved Claude session
+        started = self.runners[-1].started[0]
+        self.assertEqual((started["resume"], started["account"], started["cwd"]), ("sess-9", "work", str(self.home)))
+        box.show_history()                                # an already open conversation is only focused
+        box.tabbar.setCurrentIndex(0)
+        box.show_history()
+        box.history.resume_selected()
+        self.assertEqual(len(box.tabs), 2)
+
+    def test_open_chats_come_back_with_their_messages_after_a_restart(self):
+        c1, box = self.make()
+        c1.ask("first topic")
+        box.new_tab()
+        box.controller.ask("second topic")
+        box.flush()
+        saved = chat.load_tabs(self.home / "chats.json")
+        c = chat.ChatController(lambda: self.ctx, runner_factory=self.factory_fn, path=self.home / "chat.json")
+        again = chat.ChatBox(c, "dark", None, factory=lambda tid: chat.ChatController(
+            lambda: self.ctx, runner_factory=self.factory_fn, path=self.home / f"chat-{tid}.json", tab_id=tid),
+            saved=saved, tabs_path=self.home / "chats2.json", history_dir=self.hist)
+        self.addCleanup(again.close)
+        self.assertTrue(again.tabs[0].lazy)                      # the background tab has not read its messages yet
+        self.assertEqual(again.tabs[0].entries, [])
+        self.assertFalse(again.tabs[1].lazy)                     # the one on screen has
+        again.tabbar.setCurrentIndex(0)
+        self.assertIn("first topic", again.log.toPlainText())
+        again.tabbar.setCurrentIndex(1)
+        self.assertIn("second topic", again.log.toPlainText())
+        self.assertNotIn("first topic", again.log.toPlainText())
 
     def test_input_is_disabled_while_the_agent_works(self):
         c, box = self.make()
