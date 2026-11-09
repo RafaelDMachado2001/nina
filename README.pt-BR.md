@@ -18,7 +18,8 @@ Clique nela para abrir o [Claude Code](https://docs.claude.com/en/docs/claude-co
 - **Painel de agentes**: cada sessão e subagente do Claude Code em árvore, com estado, última ação, linha do tempo e conversa.
 - **Grafo de agentes**: grafo ao vivo, estilo Obsidian, de sessões, subagentes, ferramentas, servidores MCP e arquivos, com pulsos que mostram o fluxo de dados
   a cada evento e um **replay** na linha do tempo.
-- **Agentes gerenciados** (opcional): lance agentes do Claude por *papel*, converse com eles, interrompa, retome depois de reiniciar e aprove cada ação arriscada num diálogo. Inclui um
+- **Agentes em qualquer IA**: cada papel (desenvolvimento, revisão de texto...) pode rodar no Claude ou em qualquer API compatível com a da OpenAI (OpenAI, Gemini, Ollama, OpenRouter...), com as mesmas ferramentas e a mesma segurança.
+- **Agentes gerenciados** (opcional): lance agentes por *papel*, converse com eles, interrompa, retome depois de reiniciar e aprove cada ação arriscada num diálogo. Inclui um
   **criador de agentes** que entrevista você e grava subagentes e skills do projeto, um arquivo aprovado por vez.
 - **Plugins**: pequenos arquivos Python locais acrescentam alertas e itens de menu (veja abaixo).
 - Interface em inglês com tradução completa para português do Brasil (`"language": "pt-BR"`); um novo idioma é só um arquivo de catálogo.
@@ -157,6 +158,42 @@ Use `"chat_role"` no `config.json` para outro papel.
 Para um **atalho global** no GNOME (ou no Windows, veja acima) rode `nina --install-shortcut` (padrão `<Super><Shift>n`, porque `<Super>n` sozinho é o "focar a notificação ativa" do GNOME; `nina --uninstall-shortcut` remove). Ele registra um atalho
 personalizado que executa `nina open`: abre ou fecha o chat e **liga a NINA antes quando ela está fechada** (pelo `nina.service`, se existir; senão como um novo processo). Quem captura as teclas é o desktop, então funciona também no Wayland. Se a NINA roda como root dentro da sessão (serviço do sistema), ligá-la pede a sua senha pelo `pkexec`, e uma NINA aberta é alcançada por um socket restrito em `/run/user/<uid>/` que só você usa e que só entende `chat` e `show`.
 
+### Outras IAs: conexões e agentes
+
+Cada agente e cada conversa podem rodar em **qualquer IA que fale a API Chat Completions da OpenAI**, não só no Claude:
+OpenAI, Google Gemini, modelos locais pelo Ollama ou LM Studio, OpenRouter, Groq, um servidor da empresa... Por exemplo:
+o agente de desenvolvimento no Claude Code e o revisor de texto no Gemini.
+
+Botão direito → **Conexões e agentes...** (também no fim do menu da IA, no chat):
+
+- **Conexões**: suas contas do Claude aparecem sozinhas. **Adicionar...** cria uma conexão a partir de um modelo pronto
+  (que preenche o endereço) ou personalizada: nome, URL base, modelo (**Buscar modelos** pergunta ao servidor) e onde fica a
+  chave de API: no **cofre de senhas do sistema** (Gerenciador de Credenciais do Windows, Keychain do macOS, Secret Service
+  no Linux) ou numa **variável de ambiente** (`GEMINI_API_KEY`...). Servidores locais não precisam de chave. Chaves nunca
+  vão para o `config.json`. **Testar** manda um pedido de uma palavra. Opcional: a janela de contexto (para mostrar quanto
+  já foi usado) e os preços em US$ por milhão de tokens (para mostrar o custo).
+- **Agentes**: escolha a IA (e, se quiser, o modelo) de cada papel. Uma conversa ou um novo agente ainda pode escolher outra.
+  A conexão padrão é a conta do Claude escolhida no menu, a menos que você defina outra.
+
+Um agente em outra IA tem **as mesmas ferramentas e a mesma segurança de um agente Claude**: lê, busca, cria e edita
+arquivos, roda comandos e busca páginas da web, pelas ferramentas da própria NINA (`Read`, `Write`, `Edit`, `Glob`, `Grep`,
+`Bash`, `WebFetch`), e toda ação passa pelas mesmas regras: ferramentas pré-aprovadas do papel, escrita só nos caminhos do
+papel, **Permitir / Negar** para o resto, modo automático e "Permitir sempre". A conversa é guardada pela NINA e continua
+depois de reiniciar. Ele aparece no painel e no grafo de agentes, e o mascote reage a ele como a qualquer agente.
+
+Bom saber:
+
+- O resultado depende do modelo. Modelos locais pequenos costumam errar no uso das ferramentas: leia a folha Permitir / Negar
+  antes de permitir uma edição.
+- O `Bash` precisa de um shell bash; no Windows, o do Git for Windows (o Claude Code também precisa dele). Sem ele a
+  ferramenta não é oferecida.
+- As regras de permissão do `settings.json` do Claude Code valem só para agentes Claude. Para bloquear algo para todos os
+  agentes, use a lista de bloqueio da NINA no `config.json`: `"permissions": {"deny": ["Bash(rm -rf:*)", "WebFetch"]}`
+  (mesma sintaxe de regras do Claude Code). O `permission_mode` de um papel vale só para o Claude; as outras IAs sempre perguntam.
+- Planos gratuitos têm cota. Quando ela acaba, o chat mostra a mensagem do provedor e o agente continua pronto; a NINA
+  nunca troca de IA sozinha.
+- No terminal: `nina --connections` lista as conexões (nunca as chaves) e `nina --test-connection <id>` testa uma.
+
 ### Contas e perfis
 
 A NINA entende o layout multi-conta comum (uma pasta de configuração do Claude por conta, em `~/.claude/accounts/<conta>`) e define o `CLAUDE_CONFIG_DIR`
@@ -194,6 +231,11 @@ Um plugin com defeito nunca derruba a NINA. Plugins rodam como você, então só
 | `chat_theme` | `dark` (padrão) ou `light`; também no menu da janela de conversa |
 | `claude_bin` | Caminho do `claude` para agentes gerenciados; vazio = detecta |
 | `plugins` | `false` desativa os plugins locais |
+| `connections` | Conexões com APIs compatíveis com a da OpenAI (gerenciadas em **Conexões e agentes...**; nunca guarda chaves) |
+| `default_connection` | Id da conexão padrão; vazio = a conta do Claude escolhida no menu |
+| `role_connections` | Id do papel → id da conexão, ou `{"connection": id, "model": nome}` |
+| `permissions` | `{"deny": [regras]}`: ações bloqueadas para todos os agentes, ex.: `"Bash(rm -rf:*)"` |
+| `max_tool_steps` | Chamadas de ferramenta por resposta dos agentes em outras IAs (padrão 40) |
 
 Iniciar com o sistema: botão direito → **Iniciar com o sistema** (uma entrada de autostart freedesktop).
 

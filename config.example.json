@@ -5,12 +5,51 @@
   "profiles": {
     "work": {
       "default_dir": "~/work/main-project",
-      "add_dirs": ["~/work"],
+      "add_dirs": [
+        "~/work"
+      ],
       "context_file": "~/.config/nina/profiles/work.md",
       "permissions_file": "~/.config/nina/profiles/work.settings.json"
     }
   },
   "terminal": "",
   "sleep_minutes": 10,
-  "claude_bin": ""
+  "claude_bin": "",
+  "connections": [
+    {
+      "id": "gemini",
+      "kind": "openai",
+      "name": "Google Gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "model": "<pick one with Fetch models>",
+      "key": {
+        "source": "env",
+        "name": "GEMINI_API_KEY"
+      }
+    },
+    {
+      "id": "ollama",
+      "kind": "openai",
+      "name": "Ollama (local)",
+      "base_url": "http://localhost:11434/v1",
+      "model": "qwen3:8b",
+      "key": {
+        "source": "none"
+      },
+      "timeout_s": 600
+    }
+  ],
+  "default_connection": "",
+  "role_connections": {
+    "writing-reviewer": "gemini",
+    "code-reviewer": {
+      "connection": "ollama",
+      "model": "qwen3:8b"
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf:*)"
+    ]
+  }
 }
