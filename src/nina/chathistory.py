@@ -30,8 +30,15 @@ def history_dir() -> Path:
     return Path(base) / "nina" / "history"
 
 
+_last_id = 0
+
+
 def new_id() -> str:
-    return format(int(time.time() * 1000), "x") + format(random.randrange(256), "02x")
+    """Time-ordered and unique: two conversations created in the same millisecond still get different ids."""
+    global _last_id
+    value = max(int(time.time() * 1000) * 256 + random.randrange(256), _last_id + 1)
+    _last_id = value
+    return format(value, "x")
 
 
 def clean(raw) -> dict | None:

@@ -277,4 +277,6 @@ CATALOG = {
     "NINA's hooks were already installed.": "Os hooks da NINA já estavam instalados.",
     "NINA's hooks were removed.": "Os hooks da NINA foram removidos.",
     "No NINA hooks found.": "Nenhum hook da NINA encontrado.",
+    # connections and agents on other AIs
+    "Connection '{id}' not found; using {name}.": "Conexão '{id}' não encontrada; usando {name}.",
 }
