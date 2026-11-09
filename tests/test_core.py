@@ -371,6 +371,15 @@ class MascotStateTest(IsolatedHome):
         self.assertTrue(kept[0].read_bytes().startswith(b"this is not"))
 
 
+def _sdk_available() -> bool:
+    try:
+        from nina.agents import managed
+    except Exception:
+        return False
+    return managed.available()
+
+
+@unittest.skipUnless(_sdk_available(), "the chat needs the optional claude-agent-sdk (the 'agents' extra)")
 class ChatIntegrationTest(IsolatedHome):
     def setUp(self):
         super().setUp()
