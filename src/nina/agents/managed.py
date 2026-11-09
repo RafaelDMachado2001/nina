@@ -203,15 +203,30 @@ class Runner:
         from nina import orchestration
         return (self.orchestration or {}).get("settings") or orchestration.settings({})
 
-    def _describe(self, tool: str, tool_input: dict) -> str | None:
+    def _conn_name_for(self, agent: _Agent):
+        """`conn_name(role_id)` as seen from `agent`: a role without its own binding would run on agent's AI."""
+        orch = self.orchestration or {}
+        roles, resolve = orch.get("roles") or {}, orch.get("resolve")
+        if resolve is None or agent.connection is None:
+            return orch.get("conn_name") or str
+
+        def name(role_id: str) -> str:
+            try:
+                return resolve(roles[role_id], agent.connection)[0].get("name", "")
+            except Exception:
+                return ""
+        return name
+
+    def _describe(self, agent_id: str, tool: str, tool_input: dict) -> str | None:
         """The Delegate question names the role and the AI it would run on (it may cost money)."""
         if tool != "Delegate" or not self.orchestration:
             return None
         role = (self.orchestration.get("roles") or {}).get(str(tool_input.get("role", "")))
         if role is None:
             return None
+        agent = self.agents.get(agent_id)
         try:
-            ai = (self.orchestration.get("conn_name") or str)(role["id"])
+            ai = (self._conn_name_for(agent) if agent else (self.orchestration.get("conn_name") or str))(role["id"])
         except Exception:
             ai = ""
         head = _("Hand this task to {role} (on {ai}):", role=_(role.get("title", role["id"])), ai=ai or "?")
@@ -257,12 +272,15 @@ class Runner:
             state["error"] = str(payload)
             state["done"].set()
         elif kind == "tool":
+            state["texts"] = []                  # what it said before using a tool was narration, not the answer
             self._emit(parent.id, "tool", {"name": f"{child.label} → {payload['name']}", "summary": payload.get("summary", "")})
             self._parent_hook(child, "PreToolUse", tool=payload["name"], detail=payload.get("summary", ""))
         elif kind in ("permission", "denied"):
             self._emit(parent.id, kind, {**payload, "tool": f"{child.label} · {payload.get('tool', '')}"})
         elif kind == "usage":
             self._emit(parent.id, "usage", payload)
+        elif kind == "extra_cost" and isinstance(payload, (int, float)):     # what its own children spent
+            state["cost"] += float(payload)
         elif kind == "result" and isinstance(payload, dict):
             if isinstance(payload.get("cost"), (int, float)):
                 state["cost"] += float(payload["cost"])
@@ -325,6 +343,7 @@ class Runner:
         self._parent_hook(child, "SubagentStop", last=clip(answer or state["error"], 300))
         if state["cost"]:
             self._emit(parent.id, "tool", {"name": child.label, "summary": f"US$ {state['cost']:.4f}"})
+            self._emit(parent.id, "extra_cost", state["cost"])        # into the chat's and the day's totals
         if state["error"]:                        # a failure stays a failure, even after some text
             partial = f"\n\nWhat it said before failing:\n{answer[:4000]}" if answer else ""
             return f"Error: {child.label} failed: {state['error']}{partial}"
@@ -397,8 +416,7 @@ class Runner:
             from nina import orchestration
             roles = (self.orchestration or {}).get("roles") or {}
             kwargs["system_prompt"] = {**kwargs["system_prompt"], "append": kwargs["system_prompt"]["append"] +
-                                       orchestration.delegation_prompt(targets, roles,
-                                                                       (self.orchestration or {}).get("conn_name") or str)}
+                                       orchestration.delegation_prompt(targets, roles, self._conn_name_for(agent))}
         if disallowed:
             kwargs["disallowed_tools"] = disallowed
         return sdk.ClaudeAgentOptions(**kwargs)
@@ -415,7 +433,7 @@ class Runner:
             if targets:
                 from nina import orchestration
                 roles = (self.orchestration or {}).get("roles") or {}
-                extra = orchestration.delegation_prompt(targets, roles, (self.orchestration or {}).get("conn_name") or str)
+                extra = orchestration.delegation_prompt(targets, roles, self._conn_name_for(agent))
             await OpenAIAgent(agent, agent.connection, agent.model, self.gate, self._emit, self.max_steps,
                               hide, delegate=(lambda role, task: self.delegate(agent, role, task)) if targets else None,
                               targets=targets, extra_prompt=extra,

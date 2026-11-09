@@ -163,7 +163,7 @@ class Gate:
         self.loop, self.emit = loop, emit
         self.auto_getter, self.deny_getter = auto_getter, deny_getter
         self.pending = {}            # req_id -> Future[(allow, message, always)]
-        self.describer = None        # optional (tool, tool_input) -> text | None, for richer questions
+        self.describer = None        # optional (agent_id, tool, tool_input) -> text | None, for richer questions
         self.remember = {}           # req_id -> the auto mode steps "Allow always" would save
 
     async def check(self, agent_id: str, role: dict, cwd: str, tool: str, tool_input: dict, pending: set) -> tuple:
@@ -189,7 +189,7 @@ class Gate:
         offer = steps if steps and not any(s.hard for s in steps) else []
         if offer:
             self.remember[req] = offer
-        detail = (self.describer(tool, tool_input) if self.describer else None) or describe(tool, tool_input)
+        detail = (self.describer(agent_id, tool, tool_input) if self.describer else None) or describe(tool, tool_input)
         self.emit(agent_id, "permission", {"req": req, "tool": tool, "detail": redact(detail)[:3000],
                                            "remember": [s.label for s in offer]})
         try:

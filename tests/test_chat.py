@@ -230,6 +230,37 @@ class ChatControllerTest(IsolatedHome):
         self.ctx["cfg"] = {}
         self.assertEqual(c.role_for_chat()["id"], "general")
 
+    def test_an_interrupted_answer_is_not_reported_as_an_error(self):
+        c = self.make()
+        c.ask("hi")
+        c.on_event("agent-1", "status", "working")
+        c.interrupt()
+        c.on_event("agent-1", "result", {"cost": 0.01, "error": True,
+                                         "errors": ["[ede_diagnostic] result_type=user stop_reason=tool_use"]})
+        c.on_event("agent-1", "status", "idle")
+        self.assertFalse([t for k, t in self.messages if k == "error"])
+        self.assertIn(("info", "Interrupted."), self.messages)
+        c.ask("again")                                    # a later failure is still shown
+        c.on_event("agent-1", "result", {"cost": 0.02, "error": True, "errors": ["real failure"]})
+        self.assertIn(("error", "real failure"), self.messages)
+
+    def test_an_interrupted_answer_of_another_ai_is_not_an_error_either(self):
+        c = self.make()
+        c.ask("hi")
+        c.on_event("agent-1", "status", "working")
+        c.interrupt()
+        c.on_event("agent-1", "turn_error", "Interrupted.")
+        self.assertFalse([t for k, t in self.messages if k == "error"])
+        self.assertEqual(c.status, "idle")
+
+    def test_delegated_cost_counts_in_the_chat_and_the_day(self):
+        c = self.make()
+        c.ask("hi")
+        before = chat.chatinfo.load_day()["cost"]
+        c.on_event("agent-1", "extra_cost", 0.25)
+        self.assertAlmostEqual(c.info["cost"], 0.25)
+        self.assertAlmostEqual(chat.chatinfo.load_day()["cost"] - before, 0.25)
+
     def test_withdrawn_permission_requests_leave_the_screen(self):
         c = self.make()
         cleared = []

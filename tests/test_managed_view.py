@@ -152,6 +152,14 @@ class ManagedTabPersistenceTest(IsolatedHome):
         self.assertEqual((orch["settings"]["mode"], orch["settings"]["max_depth"]), ("collaborative", 3))
         self.assertIn("coordinator", orch["roles"])
 
+    def test_delegated_cost_is_added_to_the_agent(self):
+        tab = self.make()
+        tab.agents["x"] = {"role": roles.load_roles()["general"], "cwd": str(self.home), "account": "",
+                           "connection": "claude", "status": "working", "log": [], "session": None, "cost": 0.5,
+                           "item": __import__("PySide6.QtWidgets", fromlist=["x"]).QListWidgetItem()}
+        tab.on_event("x", "extra_cost", 0.25)
+        self.assertAlmostEqual(tab.agents["x"]["cost"], 0.75)
+
     def test_turn_errors_keep_the_agent_ready_and_hooks_are_forwarded(self):
         tab = self.make()
         got = []

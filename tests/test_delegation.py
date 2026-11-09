@@ -15,7 +15,7 @@ from nina.agents import roles as roles_mod
 ROLES = roles_mod.load_roles()
 
 
-class DelegationTest(unittest.TestCase):
+class DelegationBase(unittest.TestCase):
     def setUp(self):
         self.api = FakeOpenAI()
         self.addCleanup(self.api.close)
@@ -80,6 +80,8 @@ class DelegationTest(unittest.TestCase):
     def tools_offered(self, request_index):
         return [t["function"]["name"] for t in self.api.chat_requests()[request_index].get("tools", [])]
 
+
+class DelegationTest(DelegationBase):
     # ---- tests ----------------------------------------------------------------------------------------
     def test_manual_mode_offers_no_delegate(self):
         self.orchestrate("manual")
@@ -389,3 +391,45 @@ class StoppedChildTest(unittest.TestCase):
         with self.assertRaises(asyncio.CancelledError):
             asyncio.run(bot._turn("hi"))
         self.assertEqual(api.chat_requests(), [])
+
+
+class DeferredFixesTest(DelegationBase):
+    """The minors deferred at the end of Project 2."""
+
+    def test_only_the_childs_final_answer_comes_back(self):
+        self.orchestrate(ask=False)
+        self.api.script += [self.delegate_call(role="architect", task="plan"),
+                            reply("Let me look at the files first.", tool_calls=[("g1", "Glob", {"pattern": "*.md"})]),
+                            reply("Final plan: one step."), reply("done")]
+        aid = self.start("plan it")
+        self.wait_idle(aid)
+        result = [m for m in self.api.chat_requests()[-1]["messages"] if m["role"] == "tool"][-1]["content"]
+        self.assertEqual(result, "Final plan: one step.")
+
+    def test_delegated_cost_reaches_the_parent_totals(self):
+        self.orchestrate(ask=False)
+        self.other = {**self.other, "price_in": 1000.0, "price_out": 0.0}
+        self.api.script += [self.delegate_call(), reply("reviewed", usage=(100, 0)), reply("done")]
+        aid = self.start("review")
+        self.wait_idle(aid)
+        extra = [p for k, p in self.kinds(aid) if k == "extra_cost"]
+        self.assertEqual(len(extra), 1)
+        self.assertAlmostEqual(extra[0], 100 * 1000.0 / 1e6)
+
+    def test_a_child_names_the_ai_its_own_children_would_use(self):
+        self.orchestrate("collaborative", ask=False, max_depth=2)
+        # the writing reviewer runs on OtherAI; architect has no binding, so from there it would run on OtherAI too
+        self.api.script += [self.delegate_call(role="writing-reviewer", task="review"), reply("ok"), reply("done")]
+        aid = self.start("go", role_id="general")
+        self.wait_idle(aid)
+        child_system = self.api.chat_requests()[1]["messages"][0]["content"]
+        line = next(l for l in child_system.splitlines() if l.startswith("- architect"))
+        self.assertIn("OtherAI", line)
+
+    def test_delegation_prompts_are_not_translated(self):
+        from nina import i18n
+        i18n.set_language("pt-BR")
+        self.addCleanup(i18n.set_language, "en")
+        text = orchestration.delegation_prompt(["writing-reviewer"], ROLES, lambda r: "Gemini")
+        self.assertIn("Writing reviewer", text)
+        self.assertNotIn("Revisor", text)

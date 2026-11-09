@@ -345,6 +345,8 @@ class ManagedTab(QWidget):
         elif kind == "permission":
             self.queue.append((agent_id, payload))
             self.ask_next()
+        elif kind == "extra_cost" and isinstance(payload, (int, float)):
+            agent["cost"] += float(payload)
         elif kind == "permission_withdrawn":
             self.queue = [(aid, r) for aid, r in self.queue if r.get("req") != payload.get("req")]
         elif kind == "turn_error":            # an answer failed (quota, key, network...): the agent is still ready

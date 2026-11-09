@@ -153,6 +153,7 @@ class ChatController(QObject):
         self.connection = None            # None follows the default (the role's binding, then the default connection)
         self.role_id = None               # None follows the default role (chat_role, or the coordinator in that mode)
         self.launched = None              # (role id, orchestration settings) the running agent was started with
+        self.interrupting = False         # the user asked to stop this answer: its end is not an error
         self.context = context
         self.path = path
         self.runner_factory = runner_factory or (lambda emit, claude_bin: managed.Runner(emit, claude_bin))
@@ -327,6 +328,7 @@ class ChatController(QObject):
             self.runner.stop(self.agent_id)
             self.agent_id = None
             self.drop_permissions()
+        self.interrupting = False
         if self.agent_id is not None and self.status == "idle":
             self.set_status("working")
             self.runner.send(self.agent_id, message)
@@ -378,6 +380,7 @@ class ChatController(QObject):
 
     def interrupt(self) -> None:
         if self.agent_id is not None and self.status == "working":
+            self.interrupting = True
             self.message.emit("info", _("Interrupting..."))
             self.runner.interrupt(self.agent_id)
 
@@ -450,7 +453,10 @@ class ChatController(QObject):
                     self.info["cost"] += delta
                     chatinfo.add_day(cost=delta)
                 self.info_changed.emit()
-            if payload.get("error") or payload.get("errors"):
+            if self.interrupting:            # stopped by the user: Claude reports that as an error, it is not one
+                self.interrupting = False
+                self.message.emit("info", _("Interrupted."))
+            elif payload.get("error") or payload.get("errors"):
                 self.message.emit("error", "; ".join(payload.get("errors") or [_("error")]))
         elif kind == "error":
             if self.resuming:      # the saved session could not be resumed: start clean next time
@@ -462,6 +468,11 @@ class ChatController(QObject):
         elif kind == "permission":
             self.queue.append(payload)
             self.ask_next()
+        elif kind == "extra_cost":            # what the agents it delegated to spent
+            if isinstance(payload, (int, float)) and payload > 0:
+                self.info["cost"] += float(payload)
+                chatinfo.add_day(cost=float(payload))
+                self.info_changed.emit()
         elif kind == "permission_withdrawn":   # a delegated agent was stopped: its question no longer applies
             self.queue = [q for q in self.queue if q.get("req") != payload.get("req")]
             if self.current_req is not None and self.current_req.get("req") == payload.get("req"):
@@ -469,7 +480,8 @@ class ChatController(QObject):
                 self.permission_cleared.emit()
                 self.ask_next()
         elif kind == "turn_error":         # an answer failed (quota, key, network...): the agent is still ready
-            self.message.emit("error", str(payload))
+            self.message.emit("info" if self.interrupting else "error", str(payload))
+            self.interrupting = False
             self.drop_permissions()
             self.resuming = False
             self.set_status("idle")

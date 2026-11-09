@@ -6,7 +6,6 @@ Modes (config "orchestration" -> "mode"):
 - collaborative: like coordinator, and every role may delegate too, within "allow" and "max_depth".
 The coordinator is never a delegation target. "max_delegations" is one budget per message of the user.
 """
-from nina.i18n import _
 
 MODES = ("manual", "coordinator", "collaborative")
 COORDINATOR = "coordinator"
@@ -57,8 +56,8 @@ def chat_default_role(cfg: dict) -> str:
 
 def delegation_prompt(targets: list, roles: dict, conn_name) -> str:
     """A system-prompt section telling an agent whom it can delegate to (`conn_name(role_id)` names the AI)."""
-    lines = [f"- {r}: {_(roles[r]['title'])} (on {conn_name(r)}). {_(roles[r].get('description', ''))}"
-             for r in targets if r in roles]
+    lines = [f"- {r}: {roles[r]['title']} (on {conn_name(r)}). {roles[r].get('description', '')}"   # English, like
+             for r in targets if r in roles]                                                     # every prompt
     return ("\n\nYou can hand a task to another agent with the Delegate tool (role + a self-contained task: the other "
             "agent sees only the task, not this conversation). It answers once with its result. Delegate when a part "
             "of the request fits another role better; do the rest yourself. Available roles:\n" + "\n".join(lines))
