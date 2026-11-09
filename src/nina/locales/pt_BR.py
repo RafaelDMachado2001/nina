@@ -289,4 +289,9 @@ CATALOG = {
     " (try again in {seconds}s)": " (tente de novo em {seconds}s)",
     "Quota or rate limit reached{retry}: {message}": "Cota ou limite de uso atingido{retry}: {message}",
     "The server answered {status}: {message}": "O servidor respondeu {status}: {message}",
+    "The saved conversation could not be read.": "Não foi possível ler a conversa salva.",
+    "Interrupted by the user.": "Interrompido pelo usuário.",
+    "Interrupted.": "Interrompido.",
+    "The answer had no message.": "A resposta veio sem mensagem.",
+    "Stopped after {steps} tool steps in one answer. Send a message to continue.": "Parei depois de {steps} passos com ferramentas numa só resposta. Mande uma mensagem para continuar.",
 }

@@ -19,7 +19,7 @@ from nina.agents.permissions import WRITE_TOOLS, Gate, decide, describe
 from nina.agents.store import clip, redact
 from nina.i18n import _
 
-__all__ = ["Runner", "available", "decide", "describe", "find_claude_bin", "has_content", "query_arg", "tool_summary"]
+__all__ = ["Runner", "available", "can_run", "decide", "describe", "find_claude_bin", "has_content", "query_arg", "tool_summary"]
 
 try:
     import claude_agent_sdk as sdk
@@ -57,6 +57,13 @@ def available() -> bool:
     return sdk is not None
 
 
+def can_run(connection: dict | None) -> bool:
+    """Whether an agent on this connection can start here (Claude needs the optional SDK)."""
+    if connection is not None and connection.get("kind") == "openai":
+        return True
+    return sdk is not None
+
+
 def find_claude_bin(configured: str = "") -> str | None:
     """Use the claude that is already installed (same version you use in the terminal). None = the binary bundled with the SDK."""
     for candidate in (configured, shutil.which("claude") or "", str(Path.home() / ".local" / "bin" / "claude")):
@@ -73,8 +80,10 @@ def tool_summary(tool_input: dict) -> str:
 
 
 class _Agent:
-    def __init__(self, agent_id: str, role: dict, cwd: str, account: str, config_dir: str | None):
+    def __init__(self, agent_id: str, role: dict, cwd: str, account: str, config_dir: str | None,
+                 connection: dict | None = None, model: str = ""):
         self.id, self.role, self.cwd, self.account, self.config_dir = agent_id, role, cwd, account, config_dir
+        self.connection, self.model = connection, model
         self.session_id = None
         self.queue = None            # asyncio.Queue, created inside the loop
         self.client = None
@@ -90,6 +99,7 @@ class Runner:
         self.agents = {}
         self.auto = None             # an autoapprove.AutoMode: read-only Bash runs without asking while it is on
         self.deny = []               # the user's NINA deny list (rules), checked first for every agent
+        self.max_steps = 40          # tool calls per answer for agents on OpenAI-compatible connections
         self.loop = asyncio.new_event_loop()
         self.gate = Gate(self.loop, self._emit, lambda: self.auto, lambda: self.deny)
         self.thread = threading.Thread(target=self._main, name="nina-managed", daemon=True)
@@ -104,10 +114,11 @@ class Runner:
 
     # ---- API (called from the UI thread) ---------------------------------------------------------
     def start(self, role: dict, cwd: str, prompt: str | None, account: str = "", config_dir: str | None = None,
-              resume: str | None = None) -> str:
-        """Start an agent. With `resume` (a Claude session id) the conversation continues where it stopped;
-        `prompt` may then be None to wait for the user's next message."""
-        agent = _Agent(uuid.uuid4().hex[:12], role, str(cwd), account, config_dir)
+              resume: str | None = None, connection: dict | None = None, model: str = "") -> str:
+        """Start an agent. With `resume` (a session id) the conversation continues where it stopped; `prompt` may
+        then be None to wait for the user's next message. `connection` (see nina.connections) picks the AI: None or a
+        "claude" connection runs Claude through the SDK, an "openai" one runs NINA's own tool loop."""
+        agent = _Agent(uuid.uuid4().hex[:12], role, str(cwd), account, config_dir, connection, model)
         agent.session_id = resume
         self.agents[agent.id] = agent
         self._submit(self._launch(agent, prompt))
@@ -188,8 +199,8 @@ class Runner:
         )
         if agent.session_id:
             kwargs["resume"] = agent.session_id
-        if role.get("model"):
-            kwargs["model"] = role["model"]
+        if agent.model or role.get("model"):
+            kwargs["model"] = agent.model or role["model"]
         if self.claude_bin:
             kwargs["cli_path"] = self.claude_bin
         if not role.get("writes"):
@@ -197,6 +208,10 @@ class Runner:
         return sdk.ClaudeAgentOptions(**kwargs)
 
     async def _launch(self, agent: _Agent, prompt: str) -> None:
+        if agent.connection is not None and agent.connection.get("kind") == "openai":
+            from nina.agents.openai_agent import OpenAIAgent
+            await OpenAIAgent(agent, agent.connection, agent.model, self.gate, self._emit, self.max_steps).run(prompt)
+            return
         agent.queue = asyncio.Queue()
         agent.task = asyncio.current_task()
         try:
