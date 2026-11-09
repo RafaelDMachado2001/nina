@@ -27,7 +27,7 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(format_mention("my docs/a b.md"), '@"my docs/a b.md"')
 
     def test_home_is_expanded(self):
-        with mock.patch.dict(os.environ, {"HOME": "/home/x"}):
+        with mock.patch.dict(os.environ, {"HOME": "/home/x", "USERPROFILE": "/home/x"}):
             self.assertEqual(expand_home("see @~/n.md and @~ and @\"~/a b\" me@~x"),
                              'see @/home/x/n.md and @/home/x and @"/home/x/a b" me@~x')
 
@@ -39,7 +39,7 @@ class SuggestTest(unittest.TestCase):
         for f in ("README.md", "src/app/main.py", "src/app/util.py", "docs/guide.md", ".git/config", ".env",
                   "node_modules/x/index.js", "notes/Main Notes.txt"):
             (self.root / f).parent.mkdir(parents=True, exist_ok=True)
-            (self.root / f).write_text("x")
+            (self.root / f).write_text("x", encoding="utf-8")
 
     def values(self, query, **kw):
         return [s.value for s in suggest(query, str(self.root), **kw)]
@@ -65,13 +65,13 @@ class SuggestTest(unittest.TestCase):
         self.assertEqual(self.values("./sr"), ["./src/"])
         self.assertEqual(self.values("./src/"), ["./src/app/"])
         self.assertEqual(self.values("./src/app/m"), ["./src/app/main.py"])
-        self.assertEqual(self.values(f"{self.root}/do"), [f"{self.root}/docs/"])
+        self.assertEqual(self.values(f"{self.root.as_posix()}/do"), [f"{self.root.as_posix()}/docs/"])
         self.assertIn(f"../{self.root.name}/", self.values("../", limit=10000))
         self.assertEqual(self.values("./.e"), ["./.env"])         # hidden files only when you type the dot
         self.assertNotIn("./.env", self.values("./"))
 
     def test_home_completion(self):
-        with mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+        with mock.patch.dict(os.environ, {"HOME": str(self.root), "USERPROFILE": str(self.root)}):
             self.assertEqual(self.values("~"), ["~/"])
             self.assertEqual(self.values("~/do"), ["~/docs/"])
 

@@ -445,7 +445,7 @@ class Rules:
 
     def load(self) -> None:
         try:
-            data = json.loads(self.location().read_text())
+            data = json.loads(self.location().read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = []
         items = []
@@ -460,7 +460,7 @@ class Rules:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_suffix(".tmp")
-            tmp.write_text(json.dumps([{"prefix": p, "op": o} for p, o in self.items], indent=2, ensure_ascii=False))
+            tmp.write_text(json.dumps([{"prefix": p, "op": o} for p, o in self.items], indent=2, ensure_ascii=False), encoding="utf-8")
             os.chmod(tmp, 0o600)
             tmp.replace(target)
         except OSError:

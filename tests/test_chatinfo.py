@@ -12,18 +12,18 @@ class GitBranchTest(IsolatedHome):
         repo = self.home / "repo"
         (repo / ".git").mkdir(parents=True)
         (repo / "src" / "pkg").mkdir(parents=True)
-        (repo / ".git" / "HEAD").write_text("ref: refs/heads/feature/login\n")
+        (repo / ".git" / "HEAD").write_text("ref: refs/heads/feature/login\n", encoding="utf-8")
         self.assertEqual(chatinfo.git_branch(str(repo / "src" / "pkg")), "feature/login")
-        (repo / ".git" / "HEAD").write_text("0123456789abcdef0123456789abcdef01234567\n")
+        (repo / ".git" / "HEAD").write_text("0123456789abcdef0123456789abcdef01234567\n", encoding="utf-8")
         self.assertEqual(chatinfo.git_branch(str(repo)), "0123456")
 
     def test_worktree_file_and_non_repository(self):
         real = self.home / "main" / ".git" / "worktrees" / "wt"
         real.mkdir(parents=True)
-        (real / "HEAD").write_text("ref: refs/heads/side\n")
+        (real / "HEAD").write_text("ref: refs/heads/side\n", encoding="utf-8")
         wt = self.home / "wt"
         wt.mkdir()
-        (wt / ".git").write_text(f"gitdir: {real}\n")
+        (wt / ".git").write_text(f"gitdir: {real}\n", encoding="utf-8")
         self.assertEqual(chatinfo.git_branch(str(wt)), "side")
         plain = self.home / "plain"
         plain.mkdir()

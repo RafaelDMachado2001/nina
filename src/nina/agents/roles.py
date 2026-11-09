@@ -137,7 +137,7 @@ def load_roles(roles_dir: Path | str | None = None) -> dict:
             files = []
         for f in files:
             try:
-                parsed = parse_role_file(f.read_text())
+                parsed = parse_role_file(f.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             if parsed:

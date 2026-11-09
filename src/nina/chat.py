@@ -48,7 +48,7 @@ def state_path() -> Path:
 
 def load_saved(path: Path | None = None) -> dict:
     try:
-        data = json.loads((path or state_path()).read_text())
+        data = json.loads((path or state_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) and isinstance(data.get("session"), str) and data["session"] else {}
@@ -62,7 +62,7 @@ def save_saved(data: dict, path: Path | None = None) -> None:
             return
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
+        tmp.write_text(json.dumps(data), encoding="utf-8")
         os.chmod(tmp, 0o600)
         tmp.replace(target)
     except OSError:
@@ -81,7 +81,7 @@ def tabs_state_path() -> Path:
 def load_tabs(path: Path | None = None) -> dict:
     """The open chats: {"tabs": [{"id", "title"}, ...], "active": id}. Empty when nothing valid was saved."""
     try:
-        data = json.loads((path or tabs_state_path()).read_text())
+        data = json.loads((path or tabs_state_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     tabs, seen = [], set()
@@ -102,7 +102,7 @@ def save_tabs(data: dict, path: Path | None = None) -> None:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
+        tmp.write_text(json.dumps(data), encoding="utf-8")
         os.chmod(tmp, 0o600)
         tmp.replace(target)
     except OSError:
@@ -1212,8 +1212,11 @@ class ChatBox(QWidget):
             if chat_input.is_image_file(path):
                 images.append(path)
             else:
-                inside = os.path.commonpath([os.path.abspath(path), cwd]) == cwd
-                shown = os.path.relpath(path, cwd) if inside else path
+                try:
+                    inside = os.path.commonpath([os.path.abspath(path), cwd]) == cwd
+                except ValueError:          # Windows: another drive
+                    inside = False
+                shown = (os.path.relpath(path, cwd) if inside else path).replace(os.sep, "/")
                 mention.append(mentions.format_mention(shown + ("/" if os.path.isdir(path) else "")))
         if mime.hasImage() and not mime.hasUrls():
             self.attach_images([QImage(mime.imageData())])

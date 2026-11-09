@@ -20,7 +20,8 @@ Usage:
   nina open                  like chat, but starts NINA first when she is closed (what the shortcut runs)
   nina ask <text>            open the chat and send it a message
   nina --install-shortcut [keys] [--command cmd]
-                             GNOME: global shortcut that runs `nina open` (default <Super><Shift>n)
+                             global shortcut that runs `nina open` (GNOME: default <Super><Shift>n;
+                             Windows: a Start Menu shortcut, default Ctrl+Alt+N)
   nina --uninstall-shortcut  remove that shortcut
   nina --install-hooks       connect NINA to Claude Code (merges hooks into settings.json)
   nina --uninstall-hooks     remove NINA's hooks
@@ -85,11 +86,34 @@ def start_ui_channel(nina):
     return server
 
 
+def instance_lock():
+    """Held by the running NINA for her whole life. Two NINAs started at the same moment both find nobody answering,
+    and on Windows both could even listen on the same pipe name: only the one that takes this lock goes on.
+    None when another live process holds it (a crashed NINA's lock is taken over)."""
+    from PySide6.QtCore import QLockFile
+    config.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock = QLockFile(str(config.CONFIG_FILE.parent / "nina.lock"))
+    lock.setStaleLockTime(0)        # stale only when its process is gone, never because of its age
+    return lock if lock.tryLock(0) else None
+
+
 def run_server(app) -> int:
+    import time
+
     from PySide6.QtNetwork import QLocalServer
 
     from nina.i18n import _
     from nina.widget import Nina
+
+    lock = instance_lock()
+    if lock is None:                # another NINA is starting right now: let it come up, then bring it forward
+        for _i in range(40):
+            if send_to_running("show"):
+                return 0
+            time.sleep(0.25)
+        print("NINA: another instance holds the lock but does not answer.", file=sys.stderr)
+        return 1
+    app.aboutToQuit.connect(lock.unlock)
 
     sock_path = socket_paths()[0]
     QLocalServer.removeServer(sock_path)
@@ -171,7 +195,7 @@ def main(argv: list | None = None) -> int:
                     i = rest.index("--command")
                     command = rest[i + 1] if i + 1 < len(rest) else None
                     rest = rest[:i] + rest[i + 2:]
-                print(_("Shortcut {keys} runs: {command}", keys=shortcut.install(rest[0] if rest else shortcut.DEFAULT_KEYS, command),
+                print(_("Shortcut {keys} runs: {command}", keys=shortcut.install(rest[0] if rest else shortcut.default_keys(), command),
                         command=command or shortcut.default_command()))
         except RuntimeError as e:
             print(f"NINA: {e}", file=sys.stderr)
@@ -189,6 +213,9 @@ def main(argv: list | None = None) -> int:
     # Running through XWayland (xcb) fixes that. Set QT_QPA_PLATFORM yourself to override.
     if sys.platform.startswith("linux"):
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    if config.WINDOWS:
+        from nina.winproc import hide_child_consoles
+        hide_child_consoles()
     from PySide6.QtWidgets import QApplication
     app = QApplication(sys.argv[:1])
     app.setApplicationName(config.APP_NAME)

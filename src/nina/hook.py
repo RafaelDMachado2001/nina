@@ -30,8 +30,10 @@ def _tool_detail(tool_input) -> str:
 
 
 def forward() -> None:
+    # Claude Code always sends UTF-8, whatever the locale (on Windows sys.stdin would decode it as cp1252).
     # pythonw.exe can start with no stdin object; fall back to the inherited handle.
-    raw = sys.stdin.read() if sys.stdin is not None else open(0, encoding="utf-8", errors="replace").read()
+    raw_bytes = sys.stdin.buffer.read() if sys.stdin is not None else open(0, "rb").read()
+    raw = raw_bytes.decode("utf-8", errors="replace")
     data = json.loads(raw or "{}")
     event = {
         "ev": data.get("hook_event_name"),

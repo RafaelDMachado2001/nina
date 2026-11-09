@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "NINA"
+WINDOWS = sys.platform == "win32"
 XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 CONFIG_FILE = XDG_CONFIG / "nina" / "config.json"
 AUTOSTART_FILE = XDG_CONFIG / "autostart" / "nina.desktop"
@@ -16,7 +17,7 @@ DEFAULTS = {
     "recent": [],
     "pos": None,
     "scale": 4,
-    "terminal": "",          # e.g. "gnome-terminal" to force a specific terminal emulator
+    "terminal": "",          # e.g. "gnome-terminal" (Windows: "wt", "pwsh" or "powershell") to force a terminal
     "sleep_minutes": 10,
     "language": "en",        # "en", "pt-BR" or "auto" (from $LANG)
     # Active account: a folder in ~/.claude/accounts/<account> used as CLAUDE_CONFIG_DIR. Empty = plain ~/.claude.
@@ -25,6 +26,15 @@ DEFAULTS = {
     "profiles": {},
     "claude_bin": "",        # path of the `claude` binary for managed agents; empty = auto-detect
 }
+
+
+def gui_python(executable: str | None = None) -> str:
+    """The interpreter to start NINA with: on Windows `pythonw.exe` (next to the current one) so no console opens."""
+    exe = executable or sys.executable
+    p = Path(exe)
+    if p.name.lower() == "python.exe" and (p.parent / "pythonw.exe").exists():
+        return str(p.parent / "pythonw.exe")
+    return exe
 
 
 def plugins_dir() -> Path:
@@ -38,7 +48,7 @@ def roles_dir() -> Path:
 def load_config() -> dict:
     cfg = dict(DEFAULTS)
     try:
-        loaded = json.loads(CONFIG_FILE.read_text())
+        loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
             cfg.update(loaded)
     except (OSError, ValueError):
@@ -49,7 +59,7 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     try:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
     except OSError as e:
         print(f"NINA: could not save the configuration: {e}", file=sys.stderr)
 

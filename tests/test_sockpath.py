@@ -1,5 +1,6 @@
 import os
 import socket
+import sys
 import tempfile
 import threading
 import unittest
@@ -22,7 +23,8 @@ class PipeNameTest(unittest.TestCase):
         self.assertNotIn("/", paths[0])
 
 
-class SendLineTest(unittest.TestCase):
+@unittest.skipIf(sys.platform == "win32", "Unix sockets")
+class UnixSendLineTest(unittest.TestCase):
     def test_unix_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "n.sock")
@@ -48,6 +50,9 @@ class SendLineTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 sockpath.send_line(os.path.join(tmp, "none.sock"), b"x", windows=False)
 
+
+
+class SendLineTest(unittest.TestCase):
     def test_windows_writes_to_the_named_pipe(self):
         opened = mock.mock_open()
         with mock.patch("builtins.open", opened):

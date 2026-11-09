@@ -35,7 +35,10 @@ class PolicyTest(unittest.TestCase):
     def test_symlink_does_not_escape(self):
         outside = tempfile.mkdtemp()
         os.makedirs(f"{self.cwd}/.claude")
-        os.symlink(outside, f"{self.cwd}/.claude/agents")
+        try:
+            os.symlink(outside, f"{self.cwd}/.claude/agents")
+        except OSError:
+            self.skipTest("symlinks need developer mode or admin rights on Windows")
         self.assertEqual(managed.decide("Write", {"file_path": ".claude/agents/x.md"}, self.builder, self.cwd)[0], "deny")
 
     def test_read_only_role_never_writes(self):
@@ -68,9 +71,9 @@ class RolesTest(unittest.TestCase):
 
     def test_role_file_overrides_and_invalid_ones_are_ignored(self):
         with tempfile.TemporaryDirectory() as d:
-            Path(d, "product-owner.md").write_text("---\ntitle: My PO\ntools: Read, Bash\nwrites: docs/*, notes/*\nmodel: sonnet\n---\nBe brief.")
-            Path(d, "broken.md").write_text("no frontmatter")
-            Path(d, "empty.md").write_text("---\ntitle: x\n---\n")
+            Path(d, "product-owner.md").write_text("---\ntitle: My PO\ntools: Read, Bash\nwrites: docs/*, notes/*\nmodel: sonnet\n---\nBe brief.", encoding="utf-8")
+            Path(d, "broken.md").write_text("no frontmatter", encoding="utf-8")
+            Path(d, "empty.md").write_text("---\ntitle: x\n---\n", encoding="utf-8")
             r = roles.load_roles(d)
         po = r["product-owner"]
         self.assertEqual((po["title"], po["tools"], po["writes"], po["model"]), ("My PO", ["Read", "Bash"], ["docs/*", "notes/*"], "sonnet"))

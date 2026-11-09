@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -105,12 +106,13 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(again.all(), [("ssh servidor", "UPDATE"), ("rm", "run")])
         again.remove("rm", "run")
         self.assertEqual(Rules(self.path).all(), [("ssh servidor", "UPDATE")])
-        self.assertEqual(oct(self.path.stat().st_mode & 0o777), "0o600")
+        if os.name == "posix":   # on Windows the user profile's ACL keeps it private
+            self.assertEqual(oct(self.path.stat().st_mode & 0o777), "0o600")
 
     def test_a_broken_file_means_no_rules(self):
-        self.path.write_text("{not json")
+        self.path.write_text("{not json", encoding="utf-8")
         self.assertEqual(Rules(self.path).all(), [])
-        self.path.write_text(json.dumps([{"prefix": 1}, "x", {"prefix": "a", "op": "b"}]))
+        self.path.write_text(json.dumps([{"prefix": 1}, "x", {"prefix": "a", "op": "b"}]), encoding="utf-8")
         self.assertEqual(Rules(self.path).all(), [("a", "b")])
 
 

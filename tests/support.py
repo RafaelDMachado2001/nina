@@ -35,4 +35,4 @@ class IsolatedHome(unittest.TestCase):
 
     def write_config(self, data: dict):
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
-        self.config_file.write_text(json.dumps(data))
+        self.config_file.write_text(json.dumps(data), encoding="utf-8")

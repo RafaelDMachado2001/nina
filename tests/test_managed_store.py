@@ -23,7 +23,8 @@ class ManagedStoreTest(unittest.TestCase):
 
     def test_file_is_private(self):
         managed_store.save([self.agent()], self.path)
-        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+        if os.name == "posix":   # on Windows the user profile's ACL keeps it private
+            self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
     def test_agents_without_a_session_are_not_saved(self):
         managed_store.save([self.agent(session=None), self.agent(session="s2")], self.path)
@@ -32,9 +33,9 @@ class ManagedStoreTest(unittest.TestCase):
     def test_missing_or_damaged_file_gives_empty_list(self):
         self.assertEqual(managed_store.load(self.path), [])
         self.path.parent.mkdir(parents=True)
-        self.path.write_text("{not json")
+        self.path.write_text("{not json", encoding="utf-8")
         self.assertEqual(managed_store.load(self.path), [])
-        self.path.write_text(json.dumps({"agents": [{"role": "x"}, 5, {"role": "g", "cwd": "/w", "session": "s", "log": [1, ["a"], ["k", "t"]]}]}))
+        self.path.write_text(json.dumps({"agents": [{"role": "x"}, 5, {"role": "g", "cwd": "/w", "session": "s", "log": [1, ["a"], ["k", "t"]]}]}), encoding="utf-8")
         loaded = managed_store.load(self.path)
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0]["log"], [("k", "t")])

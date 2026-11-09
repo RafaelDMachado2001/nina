@@ -11,7 +11,7 @@ class TranscriptTest(unittest.TestCase):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         p = Path(d.name) / "s.jsonl"
-        p.write_text("\n".join(lines))
+        p.write_text("\n".join(lines), encoding="utf-8")
         return p
 
     def test_tolerant_tail(self):
@@ -41,7 +41,7 @@ class TranscriptTest(unittest.TestCase):
 
     def test_subagent_paths(self):
         jsonl, meta = transcript.subagent_files("/x/proj/abc.jsonl", "a1")
-        self.assertEqual((str(jsonl), str(meta)), ("/x/proj/abc/subagents/agent-a1.jsonl", "/x/proj/abc/subagents/agent-a1.meta.json"))
+        self.assertEqual((jsonl, meta), (Path("/x/proj/abc/subagents/agent-a1.jsonl"), Path("/x/proj/abc/subagents/agent-a1.meta.json")))
 
 
 if __name__ == "__main__":

@@ -21,26 +21,111 @@ class FreshInstallTest(IsolatedHome):
         cfg = config.load_config()
         self.assertEqual((cfg["account"], cfg["profiles"], cfg["language"]), ("", {}, "en"))
         self.assertEqual(config.list_accounts(), [])
-        self.assertEqual(config.settings_path(), self.home / ".claude" / "settings.json")
+        self.assertEqual(config.settings_path(), Path(os.path.realpath(self.home / ".claude" / "settings.json")))
         self.assertEqual(launcher.claude_command("", {}), "command claude")   # no account: plain ~/.claude
 
     def test_open_claude_with_no_configuration_at_all(self):
         launched = {}
         with mock.patch.object(launcher.shutil, "which", lambda t: t if t == "gnome-terminal" else None), \
                 mock.patch.object(launcher.subprocess, "Popen", lambda cmd, **kw: launched.update(cmd=cmd)), \
-                mock.patch.object(launcher.os, "geteuid", lambda: 1000):
+                mock.patch.object(launcher.os, "geteuid", lambda: 1000, create=True):
             cfg = config.load_config()
-            err = launcher.open_claude(config.default_dir_of(cfg), "", cfg["account"], config.profile_of(cfg))
+            err = launcher.open_claude(config.default_dir_of(cfg), "", cfg["account"], config.profile_of(cfg),
+                                       windows=False)
         self.assertIsNone(err)
         self.assertNotIn("CLAUDE_CONFIG_DIR", launched["cmd"][-1])
+
+    def test_windows_opens_windows_terminal_with_an_encoded_powershell_script(self):
+        import base64
+        launched = {}
+        (self.accounts / "work").mkdir(parents=True)
+        with mock.patch.object(launcher.shutil, "which", lambda t: t if t == "wt" else None),                 mock.patch.object(launcher.subprocess, "Popen", lambda cmd, **kw: launched.update(cmd=cmd, kw=kw)):
+            err = launcher.open_claude(str(self.home), "", "work", {"add_dirs": ["D:/it's here"]}, resume="s-1",
+                                       windows=True)
+        self.assertIsNone(err)
+        cmd = launched["cmd"]
+        self.assertEqual(cmd[:4], ["wt", "-w", "new", "new-tab"])
+        self.assertEqual(cmd[cmd.index("-d") + 1], str(self.home))
+        self.assertEqual(cmd[-5:-1], ["powershell", "-NoLogo", "-NoExit", "-EncodedCommand"])   # no pwsh here
+        script = base64.b64decode(cmd[-1]).decode("utf-16-le")
+        self.assertIn(f"$env:CLAUDE_CONFIG_DIR = '{self.accounts / 'work'}'", script)
+        self.assertIn("Remove-Item Env:ANTHROPIC_API_KEY", script)
+        self.assertIn("'--resume' 's-1' '--add-dir'", script)
+        self.assertIn("'D:", script)
+        self.assertIn("it''s here'", script)                            # quotes are doubled, nothing is expanded
+        self.assertIn("-CommandType Application", script)               # never a `claude` function or alias
+
+    def test_windows_falls_back_to_a_powershell_console(self):
+        launched = {}
+        with mock.patch.object(launcher.shutil, "which", lambda t: t if t == "powershell" else None),                 mock.patch.object(launcher.subprocess, "Popen", lambda cmd, **kw: launched.update(cmd=cmd, kw=kw)):
+            self.assertIsNone(launcher.open_claude(str(self.home), "", "", {}, windows=True))
+        self.assertEqual(launched["cmd"][0], "powershell")
+        self.assertNotIn("CLAUDE_CONFIG_DIR", __import__("base64").b64decode(launched["cmd"][-1]).decode("utf-16-le"))
+        with mock.patch.object(launcher.shutil, "which", lambda t: None):
+            self.assertIn("terminal", launcher.open_claude(str(self.home), "", "", {}, windows=True))
+
+    def test_windows_autostart_uses_the_run_key_with_pythonw(self):
+        store = {}
+
+        class Key:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def query(key, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            return store[name], 1
+
+        def delete(key, name):
+            if name not in store:
+                raise FileNotFoundError(name)
+            del store[name]
+
+        fake = mock.Mock(HKEY_CURRENT_USER=1, REG_SZ=1, OpenKey=lambda *a: Key(), CreateKey=lambda *a: Key(),
+                         QueryValueEx=query, DeleteValue=delete,
+                         SetValueEx=lambda key, name, _r, _t, value: store.__setitem__(name, value))
+        with mock.patch.dict(sys.modules, {"winreg": fake}),                 mock.patch.object(config, "gui_python", return_value="C:/py/pythonw.exe"):
+            self.assertFalse(launcher.autostart_enabled(windows=True))
+            launcher.set_autostart(True, windows=True)
+            self.assertEqual(store, {"NINA": '"C:/py/pythonw.exe" -m nina'})
+            self.assertTrue(launcher.autostart_enabled(windows=True))
+            launcher.set_autostart(False, windows=True)
+            launcher.set_autostart(False, windows=True)                  # twice is fine
+            self.assertFalse(launcher.autostart_enabled(windows=True))
+
+    def test_gui_python_prefers_pythonw(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "python.exe").write_bytes(b"")
+            self.assertEqual(config.gui_python(str(Path(d) / "python.exe")), str(Path(d) / "python.exe"))
+            (Path(d) / "pythonw.exe").write_bytes(b"")
+            self.assertEqual(config.gui_python(str(Path(d) / "python.exe")), str(Path(d) / "pythonw.exe"))
+            self.assertEqual(config.gui_python("/usr/bin/python3"), "/usr/bin/python3")
+
+    def test_only_one_nina_holds_the_instance_lock(self):
+        from nina import app as nina_app
+        first = nina_app.instance_lock()
+        self.assertIsNotNone(first)
+        self.assertIsNone(nina_app.instance_lock())          # a second NINA starting at the same moment
+        first.unlock()
+        again = nina_app.instance_lock()
+        self.assertIsNotNone(again)
+        again.unlock()
+
+    def test_ps_quote(self):
+        self.assertEqual(launcher.ps_quote("a'b $x"), "'a''b $x'")
 
     def test_a_configured_account_that_does_not_exist_warns(self):
         self.assertIn("missing", launcher.open_claude(str(self.home), "", "missing", {}))
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX only")
     def test_account_and_profile_flags(self):
         (self.accounts / "work").mkdir(parents=True)
         ctx = self.home / "ctx.md"
-        ctx.write_text("Be brief.")
+        ctx.write_text("Be brief.", encoding="utf-8")
         cmd = launcher.claude_command("work", {"add_dirs": ["/srv/a b"], "context_file": str(ctx)})
         self.assertIn(f"CLAUDE_CONFIG_DIR={self.accounts / 'work'}", cmd)
         self.assertIn("unset ANTHROPIC_API_KEY", cmd)
@@ -55,8 +140,10 @@ class FreshInstallTest(IsolatedHome):
         f = launcher.account_of_transcript
         self.assertEqual(f("/root/.claude/accounts/work/projects/-srv-x/abc.jsonl"), "work")
         self.assertEqual(f("/home/me/.claude/projects/-srv-x/abc.jsonl"), "")
+        self.assertEqual(f(r"C:\Users\me\.claude\accounts\work\projects\C--x\abc.jsonl"), "work")
         self.assertEqual(f(None), "")
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX only")
     def test_socket_path(self):
         self.assertEqual(compute_sock_path(str(self.home), 7), str(self.home / "nina.sock"))
         self.assertEqual(compute_sock_path("", 7), "/tmp/nina-7.sock")
@@ -67,7 +154,7 @@ class FreshInstallTest(IsolatedHome):
 
     def test_corrupt_config_falls_back_to_defaults(self):
         self.config_file.parent.mkdir(parents=True)
-        self.config_file.write_text("{this is not json")
+        self.config_file.write_text("{this is not json", encoding="utf-8")
         self.assertEqual(config.load_config()["account"], "")
 
 
@@ -76,23 +163,29 @@ class HooksInstallerTest(IsolatedHome):
         super().setUp()
         self.root_settings = self.home / ".claude" / "settings.json"
         self.root_settings.parent.mkdir(parents=True)
-        self.root_settings.write_text(json.dumps({"model": "x", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo other"}]}]}}))
+        self.root_settings.write_text(json.dumps({"model": "x", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo other"}]}]}}), encoding="utf-8")
         (self.accounts / "personal").mkdir(parents=True)
-        os.symlink(self.root_settings, self.accounts / "personal" / "settings.json")   # like a multi-account manager
+        try:
+            os.symlink(self.root_settings, self.accounts / "personal" / "settings.json")   # like a multi-account manager
+            self.linked = True
+        except OSError:              # Windows without developer mode: no symlinks, the account has its own file
+            self.linked = False
+            self.root_settings = self.accounts / "personal" / "settings.json"
+            self.root_settings.write_text(json.dumps({"model": "x", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo other"}]}]}}), encoding="utf-8")
         self.write_config({"account": "personal"})
 
     def hooks(self):
-        return json.loads(self.root_settings.read_text())["hooks"]
+        return json.loads(self.root_settings.read_text(encoding="utf-8"))["hooks"]
 
     def test_installs_without_deleting_anything_and_is_idempotent(self):
         self.assertFalse(claude_hooks.hooks_installed())
         claude_hooks.install_hooks()
         self.assertTrue(claude_hooks.hooks_installed())
         self.assertEqual(set(claude_hooks.HOOK_EVENTS) - set(self.hooks()), set())
-        self.assertTrue((self.accounts / "personal" / "settings.json").is_symlink())   # the link stays a link
+        self.assertEqual((self.accounts / "personal" / "settings.json").is_symlink(), self.linked)   # a link stays a link
         stop_cmds = [h["command"] for g in self.hooks()["Stop"] for h in g["hooks"]]
         self.assertIn("echo other", stop_cmds)                                           # the existing hook is preserved
-        self.assertEqual(json.loads(self.root_settings.read_text())["model"], "x")
+        self.assertEqual(json.loads(self.root_settings.read_text(encoding="utf-8"))["model"], "x")
         self.assertIn("already installed", claude_hooks.install_hooks())
         self.assertEqual(sum("nina.hook" in c for c in stop_cmds), 1)
         self.assertTrue(all(c.endswith("-m nina.hook") for c in stop_cmds if "nina" in c))
@@ -100,9 +193,9 @@ class HooksInstallerTest(IsolatedHome):
         self.assertTrue(list(self.root_settings.parent.glob("settings.json.nina-bak-*")))
 
     def test_legacy_script_entries_are_migrated(self):
-        data = json.loads(self.root_settings.read_text())
+        data = json.loads(self.root_settings.read_text(encoding="utf-8"))
         data["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": "/old/venv/bin/python /old/nina_hook.py", "timeout": 2})
-        self.root_settings.write_text(json.dumps(data))
+        self.root_settings.write_text(json.dumps(data), encoding="utf-8")
         claude_hooks.install_hooks()
         cmds = [h["command"] for g in self.hooks()["Stop"] for h in g["hooks"]]
         self.assertFalse(any("nina_hook.py" in c for c in cmds))
@@ -112,15 +205,15 @@ class HooksInstallerTest(IsolatedHome):
         claude_hooks.install_hooks()
         claude_hooks.uninstall_hooks()
         self.assertFalse(claude_hooks.hooks_installed())
-        data = json.loads(self.root_settings.read_text())
+        data = json.loads(self.root_settings.read_text(encoding="utf-8"))
         self.assertEqual(list(data["hooks"]), ["Stop"])
         self.assertEqual(data["hooks"]["Stop"][0]["hooks"][0]["command"], "echo other")
 
     def test_invalid_settings_are_not_overwritten(self):
-        self.root_settings.write_text("{broken")
+        self.root_settings.write_text("{broken", encoding="utf-8")
         with self.assertRaises(ValueError):
             claude_hooks.install_hooks()
-        self.assertEqual(self.root_settings.read_text(), "{broken")
+        self.assertEqual(self.root_settings.read_text(encoding="utf-8"), "{broken")
 
 
 class HookScriptTest(unittest.TestCase):
@@ -128,6 +221,7 @@ class HookScriptTest(unittest.TestCase):
         return subprocess.run([sys.executable, "-m", "nina.hook"], input=payload, capture_output=True, text=True, timeout=10,
                               env={"PATH": os.environ.get("PATH", ""), "XDG_RUNTIME_DIR": str(runtime)})
 
+    @unittest.skipIf(sys.platform == "win32", "Unix sockets; see test_windows_named_pipe_end_to_end")
     def test_sends_one_line_and_prints_nothing(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -154,6 +248,41 @@ class HookScriptTest(unittest.TestCase):
         self.assertEqual((data["ev"], data["sid"], data["tool"], data["cwd"]), ("PreToolUse", "s", "Bash", "/p"))
         self.assertLessEqual(len(data["detail"]), 160)
         self.assertNotIn("\n", data["detail"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows named pipes")
+    def test_windows_named_pipe_end_to_end(self):
+        """The registered hook command (pythonw.exe -m nina.hook) reaches a real QLocalServer through the pipe."""
+        from PySide6.QtCore import QCoreApplication
+        from PySide6.QtNetwork import QLocalServer
+        user = f"ninatest{os.getpid()}"
+        server = QLocalServer()
+        server.setSocketOptions(QLocalServer.UserAccessOption)
+        self.assertTrue(server.listen(f"nina-{user}"), server.errorString())
+        self.addCleanup(server.close)
+        got = bytearray()
+
+        def on_connection():
+            while server.hasPendingConnections():
+                conn = server.nextPendingConnection()
+                conn.readyRead.connect(lambda conn=conn: got.extend(bytes(conn.readAll())))
+
+        server.newConnection.connect(on_connection)
+        exe = claude_hooks.hook_command().split('"')[1]         # pythonw.exe when it exists
+        env = {**os.environ, "USERNAME": user}
+        for k in ("LOGNAME", "USER", "LNAME", "PYTHONIOENCODING", "PYTHONUTF8"):   # the plain locale, like Claude Code's
+            env.pop(k, None)
+        proc = subprocess.Popen([exe, "-m", "nina.hook"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+        proc.stdin.write(json.dumps({"hook_event_name": "Stop", "session_id": "w", "cwd": "C:\\Users\\Mashí"},
+                                    ensure_ascii=False).encode("utf-8"))      # UTF-8, not the console code page
+        proc.stdin.close()
+        deadline = time.monotonic() + 10
+        while (proc.poll() is None or not got.endswith(b"\n")) and time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        self.assertEqual((proc.wait(5), proc.stdout.read()), (0, b""))
+        line = got.decode()
+        self.assertTrue(line.startswith("hook ") and line.endswith("\n"), line)
+        self.assertEqual(json.loads(line[5:])["cwd"], "C:\\Users\\Mashí")
 
     def test_never_gets_in_claudes_way(self):
         import tempfile
@@ -303,7 +432,7 @@ class PluginApiTest(IsolatedHome):
     def make_plugin(self, name, body):
         d = self.config_file.parent / "plugins"
         d.mkdir(parents=True, exist_ok=True)
-        (d / name).write_text(body)
+        (d / name).write_text(body, encoding="utf-8")
 
     def test_plugin_setup_menu_and_alert(self):
         self.make_plugin("demo.py", (
@@ -380,11 +509,12 @@ class PluginApiTest(IsolatedHome):
             res["dt"] = time.monotonic() - t0
             return res
 
-        r = run("/bin/sh", ["-c", "echo hello"])
+        py = sys.executable
+        r = run(py, ["-c", "print('hello')"])
         self.assertEqual((r["c"], r["o"]), (0, "hello"))
-        r = run("/bin/sh", ["-c", "echo bad >&2; exit 3"])
+        r = run(py, ["-c", "import sys; print('bad', file=sys.stderr); sys.exit(3)"])
         self.assertEqual((r["c"], r["e"]), (3, "bad"))
-        r = run("/bin/sh", ["-c", "sleep 8"], timeout=1)
+        r = run(py, ["-c", "import time; time.sleep(8)"], timeout=1)
         self.assertEqual(r["c"], 124)
         self.assertLess(r["dt"], 4)
         r = run("/nonexistent/program", [])

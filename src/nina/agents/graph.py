@@ -7,6 +7,7 @@ The graph is computed from the agents and events up to an instant `cutoff`: the 
 (cutoff = now) and replay (cutoff = a point on the timeline).
 """
 import math
+import re
 import zlib
 
 from nina.i18n import _
@@ -33,7 +34,7 @@ def tool_node(tool: str) -> tuple:
 
 
 def file_node(path: str) -> tuple:
-    return f"file:{path}", (path.rstrip("/").rsplit("/", 1)[-1] or path), "file"
+    return f"file:{path}", (re.split(r"[/\\]", path.rstrip("/\\"))[-1] or path), "file"
 
 
 def _status(events: list, cutoff: float) -> str:

@@ -463,7 +463,7 @@ class Nina(QWidget):
             group.addAction(a)
             size_menu.addAction(a)
 
-        auto = QAction(_("Start with the system"), menu, checkable=True, checked=config.AUTOSTART_FILE.exists())
+        auto = QAction(_("Start with the system"), menu, checkable=True, checked=launcher.autostart_enabled())
         auto.triggered.connect(lambda checked: launcher.set_autostart(checked))
         menu.addAction(auto)
 

@@ -3,7 +3,9 @@
 the timeline of actions and the conversation (from the transcript, when available).
 Read-only: it does not control the agents, it only shows what hooks and transcripts report.
 """
+import re
 import shlex
+import sys
 import time
 from datetime import datetime
 
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from nina import launcher
 from nina.agents import transcript
 from nina.agents.graph import build_graph, pulses_for
 from nina.agents.graph_view import STATUS_COLOR, GraphView
@@ -71,7 +74,7 @@ def ago(ts: float, now: float) -> str:
 
 
 def folder(cwd: str | None) -> str:
-    return (cwd or "").rstrip("/").rsplit("/", 1)[-1] or "—"
+    return re.split(r"[/\\]", (cwd or "").rstrip("/\\"))[-1] or "—"
 
 
 class AgentsPanel(QWidget):
@@ -372,9 +375,15 @@ class AgentsPanel(QWidget):
         agent = self.store.get(self.selected) if self.selected else None
         if not agent:
             return
-        cmd = f"claude --resume {shlex.quote(agent['session_id'])}"
-        if agent.get("cwd"):
-            cmd = f"cd {shlex.quote(agent['cwd'])} && {cmd}"
+        if sys.platform == "win32":              # PowerShell
+            q = launcher.ps_quote
+            cmd = f"claude --resume {q(agent['session_id'])}"
+            if agent.get("cwd"):
+                cmd = f"Set-Location -LiteralPath {q(agent['cwd'])}; {cmd}"
+        else:
+            cmd = f"claude --resume {shlex.quote(agent['session_id'])}"
+            if agent.get("cwd"):
+                cmd = f"cd {shlex.quote(agent['cwd'])} && {cmd}"
         QApplication.clipboard().setText(cmd)
         self.hint.setText(_("Command copied."))
         QTimer.singleShot(2500, lambda: self.hint.setText(_(HINT_READONLY)))

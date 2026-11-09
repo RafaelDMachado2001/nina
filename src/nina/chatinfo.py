@@ -26,13 +26,13 @@ def git_branch(folder: str) -> str | None:
         dot = d / ".git"
         try:
             if dot.is_file():                                  # worktree or submodule: ".git" points to the real dir
-                m = re.match(r"gitdir:\s*(.+)", dot.read_text().strip())
+                m = re.match(r"gitdir:\s*(.+)", dot.read_text(encoding="utf-8").strip())
                 if not m:
                     return None
                 dot = Path(m.group(1))
                 dot = dot if dot.is_absolute() else d / dot
             if dot.is_dir():
-                head = (dot / "HEAD").read_text().strip()
+                head = (dot / "HEAD").read_text(encoding="utf-8").strip()
                 if head.startswith("ref:"):
                     return head.split("/", 2)[-1] if head.count("/") >= 2 else head[4:].strip()
                 return head[:7] or None
@@ -105,7 +105,7 @@ def usage_path() -> Path:
 def load_day(path: Path | None = None, today: str | None = None) -> dict:
     today = today or datetime.now().strftime("%Y-%m-%d")
     try:
-        data = json.loads((path or usage_path()).read_text())
+        data = json.loads((path or usage_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
     if not isinstance(data, dict) or data.get("date") != today:
@@ -121,7 +121,7 @@ def add_day(cost: float = 0.0, tokens: int = 0, path: Path | None = None) -> dic
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
+        tmp.write_text(json.dumps(data), encoding="utf-8")
         os.chmod(tmp, 0o600)
         tmp.replace(target)
     except OSError:

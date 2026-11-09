@@ -46,7 +46,7 @@ def _read_settings() -> dict:
     path = config.settings_path()
     if not path.exists():
         return {}
-    data = json.loads(path.read_text())   # ValueError if the JSON is invalid
+    data = json.loads(path.read_text(encoding="utf-8"))   # ValueError if the JSON is invalid
     if not isinstance(data, dict):
         raise ValueError("settings.json is not a JSON object")
     return data
@@ -59,7 +59,7 @@ def _write_settings(data: dict) -> None:
         shutil.copy2(path, path.with_name(f"settings.json.nina-bak-{time.strftime('%Y%m%d-%H%M%S')}"))
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".settings.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         os.replace(tmp, path)
     except BaseException:

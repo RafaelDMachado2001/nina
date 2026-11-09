@@ -17,7 +17,7 @@ def message_ids() -> set:
     for f in SRC.rglob("*.py"):
         if "locales" in f.parts:
             continue
-        for n in ast.walk(ast.parse(f.read_text())):
+        for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("_", "N_") and n.args:
                 a = n.args[0]
                 if isinstance(a, ast.Constant) and isinstance(a.value, str):

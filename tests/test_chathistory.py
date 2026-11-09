@@ -1,3 +1,4 @@
+import os
 import time
 import unittest
 
@@ -24,7 +25,8 @@ class HistoryStoreTest(IsolatedHome):
         self.assertEqual((loaded["title"], loaded["account"], loaded["session"], len(loaded["entries"])),
                          ("Fix login", "work", "sess-1", 3))
         for name in ("abc1.meta.json", "abc1.msgs.gz"):
-            self.assertEqual(oct((self.base / name).stat().st_mode & 0o777), "0o600")
+            if os.name == "posix":   # on Windows the user profile's ACL keeps it private
+                self.assertEqual(oct((self.base / name).stat().st_mode & 0o777), "0o600")
         self.assertEqual(chathistory.message_count(loaded), 2)       # tool lines are not messages
 
     def test_the_list_reads_only_the_small_meta_files(self):
@@ -50,8 +52,8 @@ class HistoryStoreTest(IsolatedHome):
         chathistory.save(record("a1", updated=10), self.base)
         chathistory.save(record("b2", updated=30), self.base)
         chathistory.save(record("c3", entries=[]), self.base)
-        (self.base / "bad.meta.json").write_text("{not json")
-        (self.base / "..evil.meta.json").write_text("{}")
+        (self.base / "bad.meta.json").write_text("{not json", encoding="utf-8")
+        (self.base / "..evil.meta.json").write_text("{}", encoding="utf-8")
         self.assertEqual([m["id"] for m in chathistory.list_meta(self.base)], ["b2", "a1"])
 
     def test_ids_cannot_escape_the_folder(self):

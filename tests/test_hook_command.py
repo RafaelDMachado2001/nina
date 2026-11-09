@@ -12,14 +12,14 @@ class HookCommandTest(unittest.TestCase):
 
     def test_windows_prefers_pythonw_next_to_python(self):
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "python.exe").write_text("")
-            (Path(tmp) / "pythonw.exe").write_text("")
+            (Path(tmp) / "python.exe").write_text("", encoding="utf-8")
+            (Path(tmp) / "pythonw.exe").write_text("", encoding="utf-8")
             command = claude_hooks.hook_command(windows=True, executable=str(Path(tmp) / "python.exe"))
         self.assertEqual(command, f'"{Path(tmp).as_posix()}/pythonw.exe" -m nina.hook')
 
     def test_windows_keeps_python_when_pythonw_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "python.exe").write_text("")
+            (Path(tmp) / "python.exe").write_text("", encoding="utf-8")
             command = claude_hooks.hook_command(windows=True, executable=str(Path(tmp) / "python.exe"))
         self.assertTrue(command.endswith('/python.exe" -m nina.hook'))
 

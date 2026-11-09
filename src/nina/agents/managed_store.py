@@ -27,7 +27,7 @@ def _clean_log(raw) -> list:
 def load(path: Path | None = None) -> list:
     """Saved agents, oldest first. A missing or damaged file yields an empty list."""
     try:
-        data = json.loads((path or default_path()).read_text())
+        data = json.loads((path or default_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     items = data.get("agents") if isinstance(data, dict) else None
@@ -47,7 +47,7 @@ def save(agents: list, path: Path | None = None) -> None:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"agents": keep}, ensure_ascii=False))
+        tmp.write_text(json.dumps({"agents": keep}, ensure_ascii=False), encoding="utf-8")
         os.chmod(tmp, 0o600)
         tmp.replace(target)
     except OSError:

@@ -86,7 +86,7 @@ def subagent_files(session_transcript: str, agent_id: str) -> tuple:
 
 def read_meta(path) -> dict:
     try:
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}

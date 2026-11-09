@@ -21,7 +21,7 @@ Click her to open [Claude Code](https://docs.claude.com/en/docs/claude-code) in 
 
 ## Requirements
 
-- Linux with X11 or XWayland (Ubuntu/GNOME works; NINA forces the `xcb` Qt platform so she can stay on top). Windows and macOS are not supported yet.
+- Linux with X11 or XWayland (Ubuntu/GNOME works; NINA forces the `xcb` Qt platform so she can stay on top), or Windows 10/11. macOS is not supported yet.
 - Python 3.10+ and [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude` in your `PATH`).
 
 ## Install
@@ -39,6 +39,31 @@ You will need the Qt xcb libraries (on Ubuntu: `libxcb-cursor0 libxkbcommon-x11-
 Start it with `nina`, then right click the mascot and enable **Connect to Claude Code** (or run `nina --install-hooks`).
 It merges NINA's hooks into the active account's `settings.json`: it never overwrites anything, keeps a timestamped backup, is idempotent,
 and `nina --uninstall-hooks` removes only NINA's entries. Start a new `claude` session afterwards (`/hooks` lists what is loaded).
+
+### Windows
+
+```powershell
+git clone https://github.com/RafaelDMachado2001/nina.git
+cd nina
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -Agents -Hooks -Shortcut -Start
+```
+
+It creates `.venv`, installs NINA (`-Agents` adds managed agents and the chat), adds **NINA** to the Start Menu and, with the
+optional switches, connects her to Claude Code (`-Hooks`), adds the `Ctrl+Alt+N` global shortcut (`-Shortcut`), starts her with
+Windows (`-Autostart`) and starts her now (`-Start`). She runs under `pythonw.exe`, so no console window stays open.
+On Windows:
+
+- The control channel is a per-user named pipe (`\\.\pipe\nina-<user>`) instead of a Unix socket; the hook is registered as
+  `pythonw.exe -m nina.hook`, so no console flashes on each tool call.
+- **Open Claude Code** opens a Windows Terminal tab (or a PowerShell console when `wt` is missing; `"terminal": "pwsh"` or `"powershell"` in
+  `config.json` forces one) and sets `CLAUDE_CONFIG_DIR` for the chosen account there.
+- **Start with the system** writes a value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+- The global shortcut is a Start Menu shortcut (`NINA Chat`) with a hotkey that Windows itself listens for. Windows only accepts
+  combinations with `Ctrl` and/or `Alt` (no `Win` key): `nina --install-shortcut "Ctrl+Shift+N"` picks another one.
+- Configuration and state live in the same places as on Linux, under your profile: `%USERPROFILE%\.config
+ina` and
+  `%USERPROFILE%\.local\state
+ina`.
 
 ## Use
 
@@ -125,7 +150,7 @@ The window is frameless (drag the header, resize from the bottom-right corner) a
 **Auto mode** (menu ⋮ → "Auto mode"): read-only shell commands (`ls`, `grep`, `git log`, `ssh host "psql -c 'select ...'"`, pipes of those) run without asking; anything else still asks. The sheet then also offers **Allow always**, which saves a rule in `~/.config/nina/auto-rules.json` for that command and operation (`ssh server` + `UPDATE` allows any `UPDATE` there, but a `DELETE` still asks). Never saved: `UPDATE`/`DELETE` without `WHERE`, redirects to a file, `sudo`, and commands that cannot be parsed. Remove a rule in the menu → "Forget a saved rule".
 Set `"chat_role"` in `config.json` to use another role (for example your own `~/.config/nina/roles/<id>.md`).
 
-For a **global shortcut** on GNOME run `nina --install-shortcut` (default `<Super><Shift>n`, because plain `<Super>n` is GNOME's "focus the active notification"; `nina --install-shortcut "<Ctrl><Alt>n"` for another one;
+For a **global shortcut** on GNOME (or on Windows, see above) run `nina --install-shortcut` (default `<Super><Shift>n`, because plain `<Super>n` is GNOME's "focus the active notification"; `nina --install-shortcut "<Ctrl><Alt>n"` for another one;
 `nina --uninstall-shortcut` removes it). It registers a custom keybinding that runs `nina open`: it opens or closes the chat, and **starts NINA first when she is closed** (through her `nina.service` if there is one, otherwise as a new process); the desktop grabs the keys, so it also works on Wayland.
 If NINA runs as root inside your session (a system service), starting her asks for your password through `pkexec`, and an open NINA is reached through a restricted socket in `/run/user/<uid>/` that only you can use and that only understands `chat` and `show`.
 
@@ -197,7 +222,7 @@ context), it always exits 0, and it swallows every error, so it can never get in
 ## Known limitations
 
 - On Python 3.10 and 3.11 NINA needs PySide6 older than 6.12 (6.12.0 has a reference-count bug that aborts the process); the package metadata pins it, and NINA refuses to start with a bad combination instead of crashing later.
-- Linux/X11 only for now; behaviour on pure Wayland is limited by the compositor (that is why she runs through XWayland). Windows and macOS are not planned for now.
+- Linux/X11 and Windows only for now; behaviour on pure Wayland is limited by the compositor (that is why she runs through XWayland). macOS is not planned for now.
 - Observed sessions (started in your own terminals) cannot be driven from the panel: it is read-only. **Open in terminal** reopens one with `claude --resume`, on the account it ran under, and **Copy resume command** gives you the command. Only managed agents can be driven from NINA.
 - A managed agent that was closed, or still open when NINA quit, comes back in the **Managed** tab as *closed* and **Resume** continues the same Claude session. The visible log is kept (last 200 lines, in `~/.local/state/nina/managed.json`, readable only by you); permission requests that were pending are not.
 

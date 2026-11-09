@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from tests.support import IsolatedHome  # noqa: F401  (sets up the offscreen Qt application)
@@ -167,8 +168,9 @@ class ChatControllerTest(IsolatedHome):
 
     def test_saved_file_is_private_and_damaged_file_is_ignored(self):
         chat.save_saved({"session": "s"}, self.state)
-        self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
-        self.state.write_text("nope")
+        if os.name == "posix":   # on Windows the user profile's ACL keeps it private
+            self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
+        self.state.write_text("nope", encoding="utf-8")
         self.assertEqual(chat.load_saved(self.state), {})
 
 
@@ -422,6 +424,7 @@ class ChatBoxTest(IsolatedHome):
     def test_info_line_shows_folder_model_context_and_clock(self):
         c, box = self.make()
         c.info.update(model="claude-sonnet-5-5", ctx_tokens=26000, ctx_max=1000000)
+        box.infobar.setFixedWidth(2000)                              # wide: everything fits, whatever the font
         c.info_changed.emit()
         text = box.infobar.text()
         for part in ("Sonnet 5.5", "ctx 3%"):
@@ -569,8 +572,8 @@ class ChatBoxTest(IsolatedHome):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
         (self.home / "docs").mkdir()
-        (self.home / "docs" / "guide.md").write_text("x")
-        (self.home / "README.md").write_text("x")
+        (self.home / "docs" / "guide.md").write_text("x", encoding="utf-8")
+        (self.home / "README.md").write_text("x", encoding="utf-8")
         c, box = self.make()
         box.input.setText("read @gui")
         box.input.refresh_popup()
@@ -596,7 +599,7 @@ class ChatBoxTest(IsolatedHome):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
         (self.home / "docs").mkdir()
-        (self.home / "docs" / "guide.md").write_text("x")
+        (self.home / "docs" / "guide.md").write_text("x", encoding="utf-8")
         _c, box = self.make()
         box.input.setText("@doc")
         box.input.refresh_popup()
@@ -623,7 +626,8 @@ class ChatBoxTest(IsolatedHome):
         box.submit()
         sent = self.runner.started[0]["prompt"]
         self.assertEqual(sent["images"][0]["media_type"], "image/png")
-        self.assertTrue(sent["text"].startswith("what is this? @/") and "~" not in sent["text"])
+        self.assertRegex(sent["text"], r"^what is this\? @([A-Za-z]:)?/")       # the home folder, with "/" (also on Windows)
+        self.assertNotIn("~", sent["text"])
         self.assertEqual((box.current.images, box.input.text(), box.strip.isVisible()), ([], "", False))
         self.assertEqual([k for k, _t in box.entries], ["user", "image"])
         self.assertIn("<img", box.log.toHtml())

@@ -93,7 +93,7 @@ def load_meta(conv: str, base: Path | None = None) -> dict | None:
     if not ID_RE.fullmatch(conv or ""):
         return None
     try:
-        return clean_meta(json.loads(((base or history_dir()) / f"{conv}.meta.json").read_text()))
+        return clean_meta(json.loads(((base or history_dir()) / f"{conv}.meta.json").read_text(encoding="utf-8")))
     except (OSError, ValueError):
         return None
 
