@@ -369,3 +369,23 @@ class DelegateDisplayTest(unittest.TestCase):
         self.assertEqual(openai_agent._summary({"role": "general", "task": "Write resumo.md"}), "general: Write resumo.md")
         self.assertEqual(managed.display_tool("mcp__nina__delegate"), "Delegate")
         self.assertEqual(managed.display_tool("Read"), "Read")
+
+
+class StoppedChildTest(unittest.TestCase):
+    def test_a_stopped_agent_never_sends_another_request(self):
+        """An interrupted child must not spend one more API call, even if a denied question wakes it first."""
+        import asyncio
+        from nina.agents import openai_agent
+        api = FakeOpenAI()
+        self.addCleanup(api.close)
+        cwd = tempfile.mkdtemp()
+        conn = {"id": "f", "kind": "openai", "name": "F", "base_url": api.base_url, "model": "m",
+                "key": {"source": "none"}, "timeout_s": 10, "headers": {}, "context_window": 0,
+                "price_in": 0.0, "price_out": 0.0}
+        agent = managed._Agent("c1", ROLES["general"], cwd, "", None, conn, "m")
+        agent.stopped = True
+        api.script.append(reply("should never be asked"))
+        bot = openai_agent.OpenAIAgent(agent, conn, "m", gate=None, emit=lambda *a: None)
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(bot._turn("hi"))
+        self.assertEqual(api.chat_requests(), [])

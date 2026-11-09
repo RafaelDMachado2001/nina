@@ -93,6 +93,7 @@ class _Agent:
         self.connection, self.model = connection, model
         self.depth, self.parent, self.budget = 0, None, None     # delegation: level, delegating agent, shared budget
         self.label = ""                                          # "<role> · <AI>" of a delegated agent
+        self.stopped = False                                     # set when a delegated agent is ended: no more calls
         self.gate_role = role                                    # the role the gate checks (+ Delegate when pre-approved)
         self.session_id = None
         self.queue = None            # asyncio.Queue, created inside the loop
@@ -347,6 +348,7 @@ class Runner:
                               "and get its answer back.", input_schema=schema, handler=handler)
 
     def _end_child(self, child: _Agent, run, cancel: bool) -> None:
+        child.stopped = True                     # first: a denied question below must not let it make another call
         for req in list(child.pending):
             self.gate.resolve(req, False, _("Agent closed."), False)
             self.emit(self._root(child).id, "permission_withdrawn", {"req": req})   # the question leaves the screen

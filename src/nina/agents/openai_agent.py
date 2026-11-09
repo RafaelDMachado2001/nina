@@ -177,6 +177,8 @@ class OpenAIAgent:
         system = {"role": "system", "content": system_prompt(a.role, a.cwd, self.bash is not None) + self.extra_prompt}
         steps, last_text = 0, ""
         while True:
+            if getattr(a, "stopped", False):     # ended by the agent that delegated to it
+                raise asyncio.CancelledError()
             self._trim()
             data = await asyncio.to_thread(
                 openai_client.chat, self.conn["base_url"], key, self.model, [system] + self.messages, self.tools,
@@ -228,6 +230,8 @@ class OpenAIAgent:
         allowed, why = await self.gate.check(a.id, getattr(a, "gate_role", a.role), a.cwd, name, args, a.pending)
         if not allowed:
             return {**result, "content": f"Error: denied: {why}"}
+        if getattr(a, "stopped", False):
+            raise asyncio.CancelledError()
         if name == "Delegate":
             return {**result, "content": await self.delegate(str(args.get("role", "")), str(args.get("task", "")))}
         return {**result, "content": await tools.run(name, args, a.cwd, self.bash, self.hide_env)}
