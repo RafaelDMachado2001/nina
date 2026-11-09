@@ -122,6 +122,11 @@ class ChatControllerTest(IsolatedHome):
         ids = [cid for cid, _label in c.connection_entries()]
         self.assertEqual(ids, [None, "claude", "claude:work", "local"])
 
+    def test_a_bad_step_limit_in_the_config_does_not_break_the_chat(self):
+        c = self.make(cfg={"max_tool_steps": "lots"})
+        self.assertTrue(c.ask("hi"))
+        self.assertEqual(self.runner.max_steps, 40)
+
     def test_deny_list_and_step_limit_reach_the_runner(self):
         c = self.make(cfg={"permissions": {"deny": ["Bash(rm:*)"]}, "max_tool_steps": 7})
         self.runner_deny = None

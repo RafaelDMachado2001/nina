@@ -165,10 +165,21 @@ def edit(cwd, file_path=None, old_string=None, new_string=None, replace_all=Fals
     return f"Edited {_shown(path, cwd)} ({count if replace_all else 1} replacement(s))."
 
 
+def _split_glob(pattern: str):
+    """An absolute pattern (C:/x/**/*.py, /home/x/*.md) as (folder, relative pattern): pathlib only globs relatively."""
+    p = Path(os.path.expanduser(pattern))
+    if not p.is_absolute():
+        return None, pattern
+    parts = p.parts
+    first = next((i for i, part in enumerate(parts) if any(ch in part for ch in "*?[")), len(parts) - 1)
+    return Path(*parts[:first]), "/".join(parts[first:])
+
+
 def glob(cwd, pattern=None, path=None, **_):
     if not pattern:
         raise ToolError("pattern is required")
-    base = _path(cwd, path) if path else Path(cwd)
+    folder, pattern = _split_glob(pattern)
+    base = folder or (_path(cwd, path) if path else Path(cwd))
     found = []
     for p in base.glob(pattern):
         try:
@@ -192,6 +203,8 @@ def grep(cwd, pattern=None, path=None, glob=None, case_insensitive=False, output
     except re.error as e:
         raise ToolError(f"invalid regular expression: {e}") from e
     base = _path(cwd, path) if path else Path(cwd)
+    if not base.exists():
+        raise ToolError(f"no such file or folder: {path}")
     files = [base] if base.is_file() else []
     if base.is_dir():
         for root, dirs, names in os.walk(base):
@@ -264,13 +277,15 @@ def webfetch(cwd, url=None, **_):
     return text or "(empty page)"
 
 
-async def bash(cwd, bash_path, command=None, timeout_s=None, **_):
+async def bash(cwd, bash_path, command=None, timeout_s=None, hide_env=(), **_):
     if not bash_path:
         raise ToolError("no bash shell is available on this computer (on Windows, install Git for Windows)")
     if not command or not isinstance(command, str):
         raise ToolError("command is required")
     timeout = max(1, min(int(timeout_s or BASH_TIMEOUT_S), BASH_MAX_TIMEOUT_S))
     extra = {} if sys.platform == "win32" else {"start_new_session": True}     # its own process group: killable as a whole
+    hidden = {name.upper() for name in hide_env}                                # API keys of NINA's connections
+    extra["env"] = {k: v for k, v in os.environ.items() if k.upper() not in hidden}
     proc = await asyncio.create_subprocess_exec(bash_path, "-c", command, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **extra)
     try:
@@ -308,18 +323,20 @@ async def _kill_tree(proc) -> None:
 SYNC = {"Read": read, "Write": write, "Edit": edit, "Glob": glob, "Grep": grep, "WebFetch": webfetch}
 
 
-async def run(name: str, args: dict, cwd: str, bash_path: str | None) -> str:
-    """Run one tool call. Always returns text."""
+async def run(name: str, args: dict, cwd: str, bash_path: str | None, hide_env=()) -> str:
+    """Run one tool call. Always returns text: no error of a tool ever ends the agent's answer.
+    `hide_env`: environment variables a shell command must not see (the API keys of NINA's connections)."""
     if not isinstance(args, dict):
         return "Error: the arguments must be a JSON object"
+    args = {k: v for k, v in args.items() if k != "hide_env"}
     try:
         if name == "Bash":
-            return _clip(await bash(cwd, bash_path, **args))
+            return _clip(await bash(cwd, bash_path, hide_env=hide_env, **args))
         fn = SYNC.get(name)
         if fn is None:
             return f"Error: unknown tool {name!r}"
         return _clip(await asyncio.to_thread(fn, cwd, **args))
     except ToolError as e:
         return f"Error: {e}"
-    except (OSError, ValueError, TypeError) as e:
+    except Exception as e:
         return f"Error: {type(e).__name__}: {e}"

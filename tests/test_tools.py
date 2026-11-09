@@ -78,9 +78,9 @@ class ToolsTest(unittest.TestCase):
         self.assertIn("oops", out)
         self.assertIn("exit code 3", out)
         self.assertIn("notes.md", run("Bash", {"command": "ls"}, self.cwd))          # runs in the agent's folder
-        t0 = time.time()
+        t0 = time.monotonic()
         self.assertIn("timed out", run("Bash", {"command": "sleep 8", "timeout_s": 1}, self.cwd))
-        self.assertLess(time.time() - t0, 6)                                        # not the full 8 s
+        self.assertLess(time.monotonic() - t0, 6)                                        # not the full 8 s
 
     def test_bash_without_a_shell_is_an_error(self):
         self.assertTrue(run("Bash", {"command": "ls"}, self.cwd, bash=None).startswith("Error:"))
@@ -105,6 +105,20 @@ class ToolsTest(unittest.TestCase):
         self.assertIn("there & you", out)
         self.assertNotIn("var a", out)
         self.assertTrue(run("WebFetch", {"url": "file:///etc/passwd"}, self.cwd).startswith("Error:"))
+
+    def test_glob_accepts_an_absolute_pattern(self):
+        out = run("Glob", {"pattern": os.path.join(self.cwd, "src", "*.py")}, self.cwd)
+        self.assertEqual(out.splitlines(), ["src/app.py"])
+
+    def test_no_tool_error_ever_escapes(self):
+        from unittest import mock
+        def boom(*a, **k):
+            raise NotImplementedError("boom")
+        with mock.patch.dict(tools.SYNC, {"Glob": boom}):
+            self.assertTrue(run("Glob", {"pattern": "*"}, self.cwd).startswith("Error:"))
+
+    def test_grep_on_a_missing_path_is_an_error(self):
+        self.assertTrue(run("Grep", {"pattern": "x", "path": "nope"}, self.cwd).startswith("Error:"))
 
     def test_unknown_tool_and_bad_arguments(self):
         self.assertTrue(run("Teleport", {}, self.cwd).startswith("Error:"))

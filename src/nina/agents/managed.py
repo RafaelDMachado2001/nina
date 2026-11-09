@@ -100,6 +100,7 @@ class Runner:
         self.auto = None             # an autoapprove.AutoMode: read-only Bash runs without asking while it is on
         self.deny = []               # the user's NINA deny list (rules), checked first for every agent
         self.max_steps = 40          # tool calls per answer for agents on OpenAI-compatible connections
+        self.connections = []        # the user's connections: their env-var keys are hidden from shell commands
         self.loop = asyncio.new_event_loop()
         self.gate = Gate(self.loop, self._emit, lambda: self.auto, lambda: self.deny)
         self.thread = threading.Thread(target=self._main, name="nina-managed", daemon=True)
@@ -213,7 +214,10 @@ class Runner:
     async def _launch(self, agent: _Agent, prompt: str) -> None:
         if agent.connection is not None and agent.connection.get("kind") == "openai":
             from nina.agents.openai_agent import OpenAIAgent
-            await OpenAIAgent(agent, agent.connection, agent.model, self.gate, self._emit, self.max_steps).run(prompt)
+            hide = {c["key"]["name"] for c in self.connections
+                    if isinstance(c.get("key"), dict) and c["key"].get("source") == "env" and c["key"].get("name")}
+            await OpenAIAgent(agent, agent.connection, agent.model, self.gate, self._emit, self.max_steps,
+                              hide).run(prompt)
             return
         agent.queue = asyncio.Queue()
         agent.task = asyncio.current_task()

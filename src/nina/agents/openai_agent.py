@@ -55,7 +55,7 @@ def _text_of(content) -> str:
 
 
 class OpenAIAgent:
-    def __init__(self, agent, connection: dict, model: str, gate, emit, max_steps: int = 40):
+    def __init__(self, agent, connection: dict, model: str, gate, emit, max_steps: int = 40, hide_env=()):
         self.agent, self.conn, self.model = agent, connection, model or connection.get("model", "")
         self.gate, self.emit, self.max_steps = gate, emit, max(1, int(max_steps or 40))
         self.bash = tools.find_bash()
@@ -66,6 +66,8 @@ class OpenAIAgent:
         self.interrupted = False
         self.cost = 0.0
         self.priced = bool(connection.get("price_in") or connection.get("price_out"))
+        own = (connection.get("key") or {})
+        self.hide_env = set(hide_env) | ({own["name"]} if own.get("source") == "env" and own.get("name") else set())
 
     # ---- called by the Runner -------------------------------------------------------------------
     async def interrupt(self) -> None:
@@ -89,8 +91,10 @@ class OpenAIAgent:
                 if loaded is None:
                     raise RuntimeError(_("The saved conversation could not be read."))
                 self.messages = loaded
+                self._close_open_calls(_("Interrupted."))      # a session saved mid-tool (e.g. a crash) stays usable
             else:
                 a.session_id = sessions.new_id()
+                sessions.save(a.session_id, [])                # resumable even if NINA quits before the first answer
             self.emit(a.id, "session", a.session_id)
             self.emit(a.id, "model", self.model)
             self._hook("SessionStart")
@@ -123,9 +127,9 @@ class OpenAIAgent:
         try:
             await self.turn
         except asyncio.CancelledError:
+            self._close_open_calls(_("Interrupted by the user."))     # before any save: the history must stay valid
             if not self.interrupted:
                 raise                               # the agent is being closed
-            self._close_open_calls(_("Interrupted by the user."))
             self.emit(a.id, "turn_error", _("Interrupted."))
         except openai_client.ApiError as e:
             del self.messages[snapshot:]            # a failed answer leaves nothing behind: sending again is clean
@@ -203,10 +207,11 @@ class OpenAIAgent:
         name = str(fn.get("name") or "")
         result = {"role": "tool", "tool_call_id": call.get("id"), "name": name}
         try:
-            args = json.loads(fn.get("arguments") or "{}")
+            raw = fn.get("arguments")
+            args = raw if isinstance(raw, dict) else json.loads(raw or "{}")   # some servers send an object
             if not isinstance(args, dict):
                 raise ValueError("not an object")
-        except ValueError as e:
+        except (ValueError, TypeError) as e:
             return {**result, "content": f"Error: the arguments are not a valid JSON object ({e})"}
         self.emit(a.id, "tool", {"name": name, "summary": _summary(args)})
         self._hook("PreToolUse", tool=name, detail=_summary(args))
@@ -215,7 +220,7 @@ class OpenAIAgent:
         allowed, why = await self.gate.check(a.id, a.role, a.cwd, name, args, a.pending)
         if not allowed:
             return {**result, "content": f"Error: denied: {why}"}
-        return {**result, "content": await tools.run(name, args, a.cwd, self.bash)}
+        return {**result, "content": await tools.run(name, args, a.cwd, self.bash, self.hide_env)}
 
     def _usage(self, usage: dict) -> None:
         prompt = int(usage.get("prompt_tokens") or 0)

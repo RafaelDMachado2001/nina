@@ -92,6 +92,15 @@ def get(cfg: dict, accounts: list, conn_id: str | None) -> dict | None:
     return next((c for c in all_connections(cfg, accounts) if c["id"] == conn_id), None) if conn_id else None
 
 
+def max_steps(cfg: dict) -> int:
+    """`max_tool_steps` from the config, 40 when missing or not a positive number."""
+    try:
+        value = int(cfg.get("max_tool_steps") or 40)
+    except (TypeError, ValueError):
+        return 40
+    return value if value > 0 else 40
+
+
 def account_to_connection(account: str | None) -> str | None:
     """A chat or agent saved before connections existed: its Claude account slug as a connection id."""
     return f"claude:{account}" if account else None
@@ -129,12 +138,15 @@ def resolve(cfg: dict, accounts: list, *, explicit: str | None, role_id: str, ro
         break
     if conn is None:
         conn = default_connection(cfg, accounts, active_account)
+    switched = ""
     if conn["kind"] == "claude" and not sdk:
         custom = custom_connections(cfg)
         if custom:
             conn, model = custom[0], ""
+            switched = _("Claude is not installed here (the 'agents' extra); using {name}.", name=conn["name"])
     if note:
         note = _("Connection '{id}' not found; using {name}.", id=note, name=conn["name"])
+    note = note or switched
     if not model:
         model = str(role.get("model") or "") if conn["kind"] == "claude" else conn.get("model", "")
     return conn, model, note

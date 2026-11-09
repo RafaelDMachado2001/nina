@@ -606,6 +606,19 @@ class Nina(QWidget):
         except Exception as e:
             print(f"NINA: could not record an agent event: {e}", file=sys.stderr)
 
+    def prune_sessions(self) -> None:
+        """Conversations NINA keeps for agents on other AIs: drop those nobody refers to any more (no open chat, no
+        history entry, no managed agent) after `history_keep_days` days, or 90 when the history is kept forever."""
+        from nina.agents import managed_store, sessions
+        days = self.cfg.get("history_keep_days", 0)
+        days = days if isinstance(days, int) and days > 0 else 90
+        keep = {m.get("session") for m in chat.chathistory.list_meta()} if chat is not None else set()
+        keep |= {a.get("session") for a in managed_store.load()}
+        if chat is not None:
+            for t in chat.load_tabs().get("tabs", []):
+                keep.add(chat.load_saved(chat.tab_state_path(t["id"])).get("session"))
+        sessions.prune(days, {k for k in keep if k})
+
     def open_connections(self) -> None:
         """The AIs NINA can use and which one each role runs on."""
         from nina.agents import roles as roles_mod
@@ -658,6 +671,7 @@ class Nina(QWidget):
         days = self.cfg.get("history_keep_days", 0)
         if isinstance(days, int) and days > 0:        # optional: forget conversations unused for this many days
             chat.chathistory.prune(days, keep={t.get("conv") for t in saved.get("tabs", [])})
+        self.prune_sessions()
         first = saved["tabs"][0]["id"] if saved else "main"
         self.chat_box = chat.ChatBox(self.make_chat_controller(first), self.cfg.get("chat_theme", "dark"),
                                      self.save_chat_theme, factory=self.make_chat_controller, saved=saved,

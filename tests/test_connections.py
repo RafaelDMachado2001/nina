@@ -62,7 +62,9 @@ class ConnectionsTest(unittest.TestCase):
         self.assertIn("gone", note)
 
     def test_without_sdk_claude_resolves_to_first_custom(self):
-        self.assertEqual(resolve(cfg(), sdk=False)[0]["id"], "gemini")
+        conn, _model, note = resolve(cfg(), sdk=False)
+        self.assertEqual(conn["id"], "gemini")
+        self.assertIn("Gemini", note)                                          # never a silent switch
         self.assertEqual(resolve(cfg(connections=[]), sdk=False)[0]["id"], "claude")   # nothing else: still Claude
 
     def test_account_to_connection(self):

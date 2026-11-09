@@ -132,6 +132,14 @@ class ManagedTabPersistenceTest(IsolatedHome):
         tab.resume_agent()
         self.assertEqual((tab.runner.started[0]["connection"], tab.runner.started[0]["model"]), ("local", "qwen"))
 
+    def test_an_agent_whose_connection_is_gone_starts_a_new_session(self):
+        self.seed(connection="deleted")
+        tab = self.make(cfg={"connections": [LOCAL]})
+        tab.listing.setCurrentRow(0)
+        tab.resume_agent()
+        self.assertEqual((tab.runner.started[0]["connection"], tab.runner.started[0]["resume"]), ("claude", None))
+        self.assertTrue(any(k == "info" and "deleted" in t for k, t in tab.agents[tab.current]["log"]))
+
     def test_turn_errors_keep_the_agent_ready_and_hooks_are_forwarded(self):
         tab = self.make()
         got = []

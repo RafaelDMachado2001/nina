@@ -288,10 +288,10 @@ class HookScriptTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             for payload in ('{"hook_event_name":"Stop","session_id":"s"}', "not json", "", "[]", '{"hook_event_name":'):
-                t0 = time.time()
+                t0 = time.monotonic()
                 r = self.run_hook(payload, d)                      # no NINA listening
                 self.assertEqual((r.returncode, r.stdout), (0, ""), payload)
-                self.assertLess(time.time() - t0, 2.0)
+                self.assertLess(time.monotonic() - t0, 2.0)
 
 
 class MascotStateTest(IsolatedHome):
@@ -627,3 +627,18 @@ class ConnectionsCliTest(IsolatedHome):
         self.assertIn("Connections and agents...", texts)
         n.save_connections({"connections": [], "default_connection": "", "role_connections": {"general": "claude"}})
         self.assertEqual(config.load_config()["role_connections"], {"general": "claude"})
+
+    def test_old_sessions_nobody_refers_to_are_pruned(self):
+        from nina import chathistory
+        from nina.agents import sessions
+        old, kept = sessions.new_id(), sessions.new_id()
+        sessions.save(old, [])
+        sessions.save(kept, [])
+        for sid in (old, kept):
+            os.utime(sessions.path_of(sid), (time.time() - 200 * 86400,) * 2)
+        chathistory.save({"id": "abc1", "title": "t", "session": kept, "entries": [["user", "hi"]]})
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        n.prune_sessions()
+        self.assertIsNone(sessions.load(old))
+        self.assertEqual(sessions.load(kept), [])

@@ -43,8 +43,8 @@ class OpenAIAgentTest(unittest.TestCase):
             return [(k, p) for _a, k, p in self.events]
 
     def wait_for(self, kind, pred=lambda p: True, timeout=20.0, after=0):
-        t0 = time.time()
-        while time.time() - t0 < timeout:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
             for k, p in self.kinds()[after:]:
                 if k == kind and pred(p):
                     return p
@@ -58,8 +58,8 @@ class OpenAIAgentTest(unittest.TestCase):
         return sum(1 for k, p in self.kinds() if k == "status" and p == "idle")
 
     def wait_idle(self, n=1):
-        t0 = time.time()
-        while self.idle_count() < n and time.time() - t0 < 20:
+        t0 = time.monotonic()
+        while self.idle_count() < n and time.monotonic() - t0 < 20:
             time.sleep(0.01)
         self.assertGreaterEqual(self.idle_count(), n, self.kinds())
 
@@ -233,6 +233,66 @@ class OpenAIAgentTest(unittest.TestCase):
         self.runner.stop(aid)
         self.wait_for("status", lambda p: p == "closed")
         self.assertEqual(self.wait_for("hook", lambda p: p["ev"] == "SessionEnd")["ev"], "SessionEnd")
+
+    # ---- final review findings ----------------------------------------------------------------------
+    def test_closing_during_a_tool_leaves_a_resumable_session(self):
+        if not __import__("nina.agents.tools", fromlist=["x"]).find_bash():
+            self.skipTest("no bash")
+        self.runner.deny = []
+        role = {**WRITER, "tools": ["Read", "Glob", "Grep", "Bash"]}
+        self.api.script.append(reply(tool_calls=[("c1", "Bash", {"command": "sleep 30"})]))
+        aid = self.runner.start(role, self.cwd, "slow", connection=self.conn, model="fake-model")
+        sid = self.wait_for("session")
+        self.wait_for("tool")
+        time.sleep(0.3)
+        self.runner.stop(aid)
+        self.wait_for("status", lambda p: p == "closed", timeout=30)
+        saved = sessions.load(sid)
+        calls = {c["id"] for m in saved if m.get("tool_calls") for c in m["tool_calls"]}
+        answered = {m["tool_call_id"] for m in saved if m["role"] == "tool"}
+        self.assertEqual(calls, answered)
+
+    def test_a_damaged_saved_session_is_repaired_on_resume(self):
+        sid = sessions.new_id()
+        sessions.save(sid, [{"role": "user", "content": "x"},
+                            {"role": "assistant", "content": "", "tool_calls": [
+                                {"id": "c9", "type": "function", "function": {"name": "Glob", "arguments": "{}"}}]}])
+        self.api.script.append(reply("ok"))
+        self.start("again", resume=sid)
+        self.wait_idle()
+        msgs = self.api.chat_requests()[0]["messages"]
+        self.assertEqual([m.get("tool_call_id") for m in msgs if m["role"] == "tool"], ["c9"])
+
+    def test_the_session_exists_before_the_first_answer(self):
+        self.api.script.append(("sleep", 2, reply("late")))
+        self.start("hi")
+        sid = self.wait_for("session")
+        time.sleep(0.3)
+        self.assertEqual(sessions.load(sid), [])
+
+    def test_arguments_sent_as_an_object_still_work(self):
+        call = reply(tool_calls=[("c1", "Read", "x")])
+        call["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = {"file_path": "README.md"}
+        self.api.script += [call, reply("done")]
+        self.start("go")
+        self.wait_idle()
+        self.assertIn("Cosmos", self.api.chat_requests()[1]["messages"][-1]["content"])
+        self.assertIn(("text", "done"), self.kinds())
+
+    def test_connection_keys_are_hidden_from_shell_commands(self):
+        from nina.agents import tools
+        if not tools.find_bash():
+            self.skipTest("no bash")
+        role = {**WRITER, "tools": ["Read", "Glob", "Grep", "Bash"]}
+        conn = {**self.conn, "key": {"source": "env", "name": "NINA_TEST_SECRET"}}
+        self.runner.connections = [conn]
+        with mock.patch.dict(os.environ, {"NINA_TEST_SECRET": "sk-leak-me"}):
+            self.api.script += [reply(tool_calls=[("c1", "Bash", {"command": "echo [$NINA_TEST_SECRET]"})]), reply("ok")]
+            self.runner.start(role, self.cwd, "show it", connection=conn, model="fake-model")
+            self.wait_idle()
+        out = self.api.chat_requests()[1]["messages"][-1]["content"]
+        self.assertIn("[]", out)
+        self.assertNotIn("sk-leak-me", out)
 
 
 class SessionsTest(unittest.TestCase):

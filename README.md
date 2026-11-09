@@ -182,8 +182,13 @@ Good to know:
 - The result depends on the model. Small local models often misuse tools: read the Allow / Deny sheet before allowing an edit.
 - `Bash` needs a bash shell; on Windows that is Git for Windows (Claude Code needs it too). Without it the tool is not offered.
 - Claude Code's own `settings.json` permission rules only apply to Claude agents. To block something for every agent, use
-  NINA's deny list in `config.json`: `"permissions": {"deny": ["Bash(rm -rf:*)", "WebFetch"]}` (Claude Code's rule syntax).
-  A role's `permission_mode` only applies to Claude; other AIs always ask.
+  NINA's deny list in `config.json`: `"permissions": {"deny": ["Bash(rm -rf:*)", "Read(**/.env)", "WebFetch"]}` (Claude Code's
+  rule syntax). It is checked before anything else, also passed to Claude Code, and it matches every part of a command
+  (`cd x && rm -rf /`, `sudo rm -rf /`) and every spelling of a path (`./.env`, `~/...`, absolute). It is a safety net, not a
+  sandbox: a command can still reach the same effect another way, so keep reading what you allow.
+- Pre-approved tools in a role (`tools: Read, Bash(git log:*)`) only cover a single plain command: chained, substituted or
+  redirected commands always ask. A role's `permission_mode` only applies to Claude; other AIs always ask.
+- Shell commands of agents on other AIs never see the API keys of your connections that live in environment variables.
 - Free tiers have quotas. When one runs out, the chat shows the provider's message and the agent stays ready; NINA never
   switches to another AI by itself.
 - From a terminal: `nina --connections` lists them (never the keys) and `nina --test-connection <id>` tests one.

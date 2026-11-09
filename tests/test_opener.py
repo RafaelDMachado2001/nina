@@ -111,8 +111,8 @@ class UiChannelTest(unittest.TestCase):
             self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
             t = threading.Thread(target=lambda: sockpath.send_line(path, b"sleep\nask rm -rf /\nchat\nshow\nsay hi\n", 2))
             t.start()
-            end = time.time() + 10                 # generous under load; the loop ends as soon as both arrive
-            while time.time() < end and len(got) < 2:
+            end = time.monotonic() + 10                 # generous under load; the loop ends as soon as both arrive
+            while time.monotonic() < end and len(got) < 2:
                 app.processEvents()
                 time.sleep(0.01)
             t.join()

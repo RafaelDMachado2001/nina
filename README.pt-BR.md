@@ -188,8 +188,15 @@ Bom saber:
 - O `Bash` precisa de um shell bash; no Windows, o do Git for Windows (o Claude Code também precisa dele). Sem ele a
   ferramenta não é oferecida.
 - As regras de permissão do `settings.json` do Claude Code valem só para agentes Claude. Para bloquear algo para todos os
-  agentes, use a lista de bloqueio da NINA no `config.json`: `"permissions": {"deny": ["Bash(rm -rf:*)", "WebFetch"]}`
-  (mesma sintaxe de regras do Claude Code). O `permission_mode` de um papel vale só para o Claude; as outras IAs sempre perguntam.
+  agentes, use a lista de bloqueio da NINA no `config.json`: `"permissions": {"deny": ["Bash(rm -rf:*)", "Read(**/.env)", "WebFetch"]}`
+  (mesma sintaxe de regras do Claude Code). Ela é verificada antes de tudo, também é passada ao Claude Code e pega qualquer
+  parte de um comando (`cd x && rm -rf /`, `sudo rm -rf /`) e qualquer forma de escrever um caminho (`./.env`, `~/...`,
+  absoluto). É uma rede de segurança, não uma caixa de areia: um comando ainda pode chegar ao mesmo efeito por outro caminho,
+  então continue lendo o que você permite.
+- Ferramentas pré-aprovadas num papel (`tools: Read, Bash(git log:*)`) cobrem só um comando simples: comandos encadeados,
+  com substituição ou redirecionamento sempre perguntam. O `permission_mode` de um papel vale só para o Claude; as outras
+  IAs sempre perguntam.
+- Os comandos de shell dos agentes em outras IAs nunca veem as chaves de API das suas conexões guardadas em variáveis de ambiente.
 - Planos gratuitos têm cota. Quando ela acaba, o chat mostra a mensagem do provedor e o agente continua pronto; a NINA
   nunca troca de IA sozinha.
 - No terminal: `nina --connections` lista as conexões (nunca as chaves) e `nina --test-connection <id>` testa uma.

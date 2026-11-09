@@ -201,8 +201,12 @@ class ManagedTab(QWidget):
         ctx = self.context()
         cfg = ctx.get("cfg") or {}
         self.runner.deny = list((cfg.get("permissions") or {}).get("deny") or [])
-        self.runner.max_steps = int(cfg.get("max_tool_steps") or 40)
+        self.runner.max_steps = connections.max_steps(cfg)
+        self.runner.connections = connections.custom_connections(cfg)
         conn, model, note = resolve_for(ctx, role, connection_id)
+        if resume and conn["id"] != connection_id:      # a session only resumes on the connection it ran on
+            resume = None
+            note = (note + " " if note else "") + _("A new conversation starts.")
         account = conn.get("account", "") if conn["kind"] == "claude" else ""
         config_dir = None
         if account and ctx.get("accounts_root") and (Path(ctx["accounts_root"]) / account).is_dir():

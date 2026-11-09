@@ -285,7 +285,8 @@ class ChatController(QObject):
             self.runner = self.runner_factory(self._event.emit, managed.find_claude_bin(ctx.get("claude_bin", "")))
             self.runner.auto = self.auto
         self.runner.deny = list((cfg.get("permissions") or {}).get("deny") or [])
-        self.runner.max_steps = int(cfg.get("max_tool_steps") or 40)
+        self.runner.max_steps = connections.max_steps(cfg)
+        self.runner.connections = connections.custom_connections(cfg)
         conn, model, note = self.resolved()
         if note:
             self.message.emit("info", note)

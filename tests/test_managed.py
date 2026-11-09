@@ -102,8 +102,8 @@ class RunnerTest(unittest.TestCase):
             return [(k, p) for _a, k, p in self.events]
 
     def wait_for(self, kind, pred=lambda p: True, timeout=5.0):
-        t0 = time.time()
-        while time.time() - t0 < timeout:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
             for k, p in self.kinds():
                 if k == kind and pred(p):
                     return p
@@ -312,8 +312,8 @@ class RunnerTest(unittest.TestCase):
         aid = self.runner.start(roles.load_roles()["general"], self.cwd, "x")
         self.wait_for("status", lambda p: p == "working")
         self.runner.interrupt(aid)
-        t0 = time.time()
-        while not getattr(self.client, "interrupted", False) and time.time() - t0 < 3:
+        t0 = time.monotonic()
+        while not getattr(self.client, "interrupted", False) and time.monotonic() - t0 < 3:
             time.sleep(0.01)
         self.assertTrue(self.client.interrupted)
 

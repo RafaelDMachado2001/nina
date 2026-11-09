@@ -333,4 +333,6 @@ CATALOG = {
     "the connection's model": "o modelo da conexão",
     "unknown": "desconhecida",
     "{n} models.": "{n} modelos.",
+    "Claude is not installed here (the 'agents' extra); using {name}.": "O Claude não está instalado aqui (o extra 'agents'); usando {name}.",
+    "A new conversation starts.": "Uma nova conversa começa.",
 }
