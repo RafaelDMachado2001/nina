@@ -563,6 +563,13 @@ class Nina(QWidget):
             if state["timeout"]:
                 code, err = 124, _("Timed out ({seconds}s). {detail}", seconds=timeout_s, detail=err).strip()
             self.processes.discard(proc)
+            # Disconnect the Python slots before deleting: with PySide6 6.12 on Linux, a QProcess deleted while its
+            # lambdas are still connected crashes the next event loop pass (SIGSEGV/SIGBUS), long after this call.
+            for signal in (proc.finished, proc.errorOccurred):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
             proc.deleteLater()
             timer.deleteLater()
             done(code, out, err or extra)

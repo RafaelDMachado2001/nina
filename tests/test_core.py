@@ -503,9 +503,13 @@ class PluginApiTest(IsolatedHome):
         def run(program, args, timeout=30):
             loop, res = QEventLoop(), {}
             n.run_process(program, args, lambda c, o, e: (res.update(c=c, o=o, e=e), loop.quit()), timeout)
-            QTimer.singleShot(15000, loop.quit)
+            guard = QTimer()                 # owned here and stopped below: a bare singleShot would fire later, in
+            guard.setSingleShot(True)        # another test, on this already deleted event loop (a crash on Linux)
+            guard.timeout.connect(loop.quit)
+            guard.start(15000)
             t0 = time.monotonic()
             loop.exec()
+            guard.stop()
             res["dt"] = time.monotonic() - t0
             return res
 
