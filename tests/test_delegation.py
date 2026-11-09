@@ -194,3 +194,111 @@ class DelegationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(managed.sdk is None, "claude-agent-sdk not installed")
+class ClaudeDelegationTest(unittest.TestCase):
+    def setUp(self):
+        self.runner = managed.Runner(lambda *a: None, client_factory=lambda options: None)
+        self.addCleanup(self.runner.shutdown)
+        self.cwd = tempfile.mkdtemp()
+
+    def orchestrate(self, mode, ask=True):
+        st = orchestration.settings({"orchestration": {"mode": mode, "ask": ask}})
+        self.runner.orchestration = {"settings": st, "roles": ROLES, "resolve": None, "conn_name": lambda r: "Claude"}
+
+    def agent(self, role_id):
+        a = managed._Agent("a1", ROLES[role_id], self.cwd, "", None)
+        self.runner._prepare(a)
+        return a
+
+    def test_only_an_agent_that_may_delegate_gets_the_tool_and_loses_native_subagents(self):
+        self.orchestrate("manual")
+        options = self.runner._options(self.agent("coordinator"))
+        self.assertFalse(options.mcp_servers)
+        self.assertNotIn("Task", options.disallowed_tools or [])
+        self.orchestrate("coordinator")
+        options = self.runner._options(self.agent("coordinator"))
+        self.assertIn("nina", options.mcp_servers)
+        self.assertTrue({"Task", "Agent"} <= set(options.disallowed_tools))
+        self.assertFalse(self.runner._options(self.agent("general")).mcp_servers)   # coordinator mode: only it
+
+    def test_the_tool_runs_the_delegation_and_returns_its_answer(self):
+        import asyncio
+        self.orchestrate("coordinator")
+        agent = self.agent("coordinator")
+        seen = []
+
+        async def fake_delegate(parent, role, task):
+            seen.append((parent.id, role, task))
+            return "the answer"
+
+        self.runner.delegate = fake_delegate
+        tool = self.runner._delegate_tool(agent)
+        result = asyncio.run(tool.handler({"role": "writing-reviewer", "task": "check"}))
+        self.assertEqual(seen, [("a1", "writing-reviewer", "check")])
+        self.assertEqual(result["content"][0]["text"], "the answer")
+        self.assertFalse(result.get("is_error"))
+
+    def test_the_gate_treats_the_claude_tool_as_delegate(self):
+        import asyncio
+        from nina.agents.permissions import Gate
+        events = []
+
+        async def check(role):
+            gate = Gate(asyncio.get_running_loop(), lambda *a: events.append(a), lambda: None, lambda: [])
+            task = asyncio.ensure_future(gate.check("a", role, self.cwd, "mcp__nina__delegate",
+                                                    {"role": "writing-reviewer", "task": "t"}, set()))
+            for _ in range(20):
+                await asyncio.sleep(0)
+            if not task.done():
+                gate.resolve(events[-1][2]["req"], True)
+            return await task
+
+        self.assertEqual(asyncio.run(check(ROLES["coordinator"])), (True, ""))
+        self.assertEqual(events[-1][2]["tool"], "Delegate")                     # it asked, as Delegate
+        events.clear()
+        approved = {**ROLES["coordinator"], "tools": ROLES["coordinator"]["tools"] + ["Delegate"]}
+        self.assertEqual(asyncio.run(check(approved)), (True, ""))
+        self.assertEqual(events, [])                                            # pre-approved: no question
+
+    def test_a_claude_child_reports_back_through_the_runner(self):
+        """A delegated Claude agent's events must go through the interceptor, or the delegation never ends."""
+        import asyncio
+        sdk = managed.sdk
+        owner = self
+
+        class FakeClient:
+            def __init__(self, options):
+                owner.child_options = options
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def query(self, text):
+                pass
+
+            async def interrupt(self):
+                pass
+
+            async def get_context_usage(self):
+                raise RuntimeError("n/a")
+
+            async def receive_response(self):
+                yield sdk.AssistantMessage(content=[sdk.TextBlock(text="claude child answer")], model="m")
+                yield sdk.ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+                                        num_turns=1, session_id="s-child", total_cost_usd=0.01)
+
+        runner = managed.Runner(lambda *a: None, client_factory=FakeClient)
+        self.addCleanup(runner.shutdown)
+        st = orchestration.settings({"orchestration": {"mode": "coordinator", "ask": False}})
+        claude = {"id": "claude", "kind": "claude", "name": "Claude"}
+        runner.orchestration = {"settings": st, "roles": ROLES, "resolve": lambda role, conn: (claude, "", "", None),
+                                "conn_name": lambda r: "Claude"}
+        parent = managed._Agent("p1", ROLES["coordinator"], self.cwd, "", None, claude)
+        runner._prepare(parent)
+        future = asyncio.run_coroutine_threadsafe(runner.delegate(parent, "writing-reviewer", "check"), runner.loop)
+        self.assertEqual(future.result(timeout=10), "claude child answer")

@@ -294,6 +294,21 @@ class Runner:
             answer = answer[:20000] + "\n… [truncated]"
         return answer or f"Error: {child.label} gave no answer"
 
+    def _delegate_tool(self, agent: _Agent):
+        """NINA's Delegate as an in-process MCP tool for a Claude agent (Claude sees it as mcp__nina__delegate)."""
+        targets = self.targets_for(agent)
+
+        async def handler(args: dict) -> dict:
+            text = await self.delegate(agent, str(args.get("role", "")), str(args.get("task", "")))
+            return {"content": [{"type": "text", "text": text}], "is_error": text.startswith("Error:")}
+
+        schema = {"type": "object", "properties": {
+            "role": {"type": "string", "enum": targets, "description": "Which role does the task"},
+            "task": {"type": "string", "description": "Everything the other agent needs: it does not see this conversation"}},
+            "required": ["role", "task"]}
+        return sdk.SdkMcpTool(name="delegate", description="Hand a self-contained task to another agent (a role) "
+                              "and get its answer back.", input_schema=schema, handler=handler)
+
     def _end_child(self, child: _Agent, run, cancel: bool) -> None:
         for req in list(child.pending):
             self.gate.resolve(req, False, _("Agent closed."), False)
@@ -310,7 +325,7 @@ class Runner:
             try:
                 await agent.client.interrupt()
             except Exception as e:
-                self.emit(agent.id, "error", _("Could not interrupt: {error}", error=e))
+                self._emit(agent.id, "error", _("Could not interrupt: {error}", error=e))
 
     def _options(self, agent: _Agent):
         role = agent.role
@@ -323,7 +338,7 @@ class Runner:
             permission_mode=role.get("permission_mode") or "default",
             cwd=agent.cwd, env=env,
             can_use_tool=lambda tool, tool_input, ctx: self._can_use_tool(agent, tool, tool_input),
-            stderr=lambda line: self.emit(agent.id, "stderr", clip(line, 300)),
+            stderr=lambda line: self._emit(agent.id, "stderr", clip(line, 300)),
         )
         if agent.session_id:
             kwargs["resume"] = agent.session_id
@@ -334,6 +349,16 @@ class Runner:
         disallowed = list(self.deny)                           # NINA's deny list, also where can_use_tool is skipped
         if not role.get("writes"):
             disallowed += sorted(WRITE_TOOLS)                  # read-only role: it never even gets to ask
+        targets = self.targets_for(agent)
+        if targets:
+            # It delegates through NINA (limits, prompts, labels), not through Claude's own subagents.
+            disallowed += ["Task", "Agent"]
+            kwargs["mcp_servers"] = {"nina": sdk.create_sdk_mcp_server("nina", tools=[self._delegate_tool(agent)])}
+            from nina import orchestration
+            roles = (self.orchestration or {}).get("roles") or {}
+            kwargs["system_prompt"] = {**kwargs["system_prompt"], "append": kwargs["system_prompt"]["append"] +
+                                       orchestration.delegation_prompt(targets, roles,
+                                                                       (self.orchestration or {}).get("conn_name") or str)}
         if disallowed:
             kwargs["disallowed_tools"] = disallowed
         return sdk.ClaudeAgentOptions(**kwargs)
@@ -363,28 +388,28 @@ class Runner:
                 text = prompt
                 while True:
                     if text:
-                        self.emit(agent.id, "status", "working")
+                        self._emit(agent.id, "status", "working")
                         await client.query(query_arg(text))
                         async for msg in client.receive_response():
                             self._handle(agent, msg)
                     await self._report_context(agent, client)
-                    self.emit(agent.id, "status", "idle")
+                    self._emit(agent.id, "status", "idle")
                     text = await agent.queue.get()      # None = close
                     if text is None:
                         break
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.emit(agent.id, "error", clip(f"{type(e).__name__}: {e}", 300))
+            self._emit(agent.id, "error", clip(f"{type(e).__name__}: {e}", 300))
         finally:
             agent.client = None
-            self.emit(agent.id, "status", "closed")
+            self._emit(agent.id, "status", "closed")
 
     async def _report_context(self, agent: _Agent, client) -> None:
         """How full the context window is after a turn (what /context shows). Best effort: never breaks the chat."""
         try:
             u = await client.get_context_usage()
-            self.emit(agent.id, "context", {"tokens": int(u["totalTokens"]), "max": int(u["maxTokens"]),
+            self._emit(agent.id, "context", {"tokens": int(u["totalTokens"]), "max": int(u["maxTokens"]),
                                             "model": str(u.get("model") or "")})
         except Exception:
             pass
@@ -395,30 +420,30 @@ class Runner:
             sid = (getattr(msg, "data", None) or {}).get("session_id")
             if sid:
                 agent.session_id = sid
-                self.emit(agent.id, "session", sid)
+                self._emit(agent.id, "session", sid)
             if (getattr(msg, "data", None) or {}).get("model"):
-                self.emit(agent.id, "model", msg.data["model"])
+                self._emit(agent.id, "model", msg.data["model"])
         elif kind == "RateLimitEvent":
             info = msg.rate_limit_info
-            self.emit(agent.id, "ratelimit", {
+            self._emit(agent.id, "ratelimit", {
                 "status": info.status, "type": info.rate_limit_type, "utilization": info.utilization,
                 "resets_at": info.resets_at, "windows": (info.raw or {}).get("unifiedWindows") or {}})
         elif kind == "AssistantMessage":
             usage = getattr(msg, "usage", None) or {}
             new = sum(int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))
             if new:
-                self.emit(agent.id, "usage", new)
+                self._emit(agent.id, "usage", new)
             for block in msg.content:
                 block_kind = type(block).__name__
                 if block_kind == "TextBlock" and block.text.strip():
-                    self.emit(agent.id, "text", redact(block.text))
+                    self._emit(agent.id, "text", redact(block.text))
                 elif block_kind == "ToolUseBlock":
-                    self.emit(agent.id, "tool", {"name": block.name, "summary": tool_summary(block.input or {})})
+                    self._emit(agent.id, "tool", {"name": block.name, "summary": tool_summary(block.input or {})})
         elif kind == "ResultMessage":
             if getattr(msg, "session_id", None) and not agent.session_id:
                 agent.session_id = msg.session_id
-                self.emit(agent.id, "session", msg.session_id)
-            self.emit(agent.id, "result", {
+                self._emit(agent.id, "session", msg.session_id)
+            self._emit(agent.id, "result", {
                 "cost": getattr(msg, "total_cost_usd", None), "turns": getattr(msg, "num_turns", None),
                 "error": bool(getattr(msg, "is_error", False)), "reason": getattr(msg, "terminal_reason", None),
                 "errors": list(getattr(msg, "errors", None) or [])})
