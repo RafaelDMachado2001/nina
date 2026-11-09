@@ -201,6 +201,22 @@ Bom saber:
   nunca troca de IA sozinha.
 - No terminal: `nina --connections` lista as conexões (nunca as chaves) e `nina --test-connection <id>` testa uma.
 
+### Orquestração: agentes que delegam
+
+Como a NINA usa os seus agentes é escolha sua (menu ⋮ do chat → **Orquestração**, ou **Conexões e agentes...** → Agentes):
+
+- **Manual** (padrão): você escolhe o agente de cada conversa no botão de papel do cabeçalho do chat. Os agentes nunca delegam.
+- **Coordenadora**: as conversas novas falam com a **NINA (coordenadora)**. Ela divide o seu pedido ("revise o texto deste
+  artigo e depois corrija o bug do formulário de contato"), entrega cada parte ao papel certo (na IA daquele papel) e dá uma
+  resposta só, dizendo quem fez o quê.
+- **Colaborativo**: como a Coordenadora, e cada agente também pode passar trabalho a outros papéis.
+
+Delegar é mais uma ação, com as mesmas regras: por padrão pede **Permitir / Negar** antes (papel, IA e tarefa); cada ação
+do agente delegado pergunta como qualquer outra, com o nome dele ("Revisor de escrita · Gemini → Edit"); um papel sem IA
+própria roda na IA do agente que delegou; e há limites: **níveis de delegação** (padrão 2) e **delegações por mensagem**
+(padrão 8, somando tudo o que uma mensagem dispara). Os agentes delegados aparecem como subagentes no painel e no grafo.
+Um agente que pode delegar pela NINA não usa os subagentes do próprio Claude, para toda divisão passar por esses limites.
+
 ### Contas e perfis
 
 A NINA entende o layout multi-conta comum (uma pasta de configuração do Claude por conta, em `~/.claude/accounts/<conta>`) e define o `CLAUDE_CONFIG_DIR`
@@ -243,6 +259,7 @@ Um plugin com defeito nunca derruba a NINA. Plugins rodam como você, então só
 | `role_connections` | Id do papel → id da conexão, ou `{"connection": id, "model": nome}` |
 | `permissions` | `{"deny": [regras]}`: ações bloqueadas para todos os agentes, ex.: `"Bash(rm -rf:*)"` |
 | `max_tool_steps` | Chamadas de ferramenta por resposta dos agentes em outras IAs (padrão 40) |
+| `orchestration` | `{"mode": "manual"\|"coordinator"\|"collaborative", "max_depth": 2, "max_delegations": 8, "ask": true, "allow": {papel: [papéis]}}` |
 
 Iniciar com o sistema: botão direito → **Iniciar com o sistema** (uma entrada de autostart freedesktop).
 

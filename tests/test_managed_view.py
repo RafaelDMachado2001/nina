@@ -54,6 +54,8 @@ LOCAL = {"id": "local", "kind": "openai", "name": "Local AI", "base_url": "http:
 
 
 class FakeRunner:
+    orchestration = None
+
     def __init__(self):
         self.started = []
 
@@ -139,6 +141,24 @@ class ManagedTabPersistenceTest(IsolatedHome):
         tab.resume_agent()
         self.assertEqual((tab.runner.started[0]["connection"], tab.runner.started[0]["resume"]), ("claude", None))
         self.assertTrue(any(k == "info" and "deleted" in t for k, t in tab.agents[tab.current]["log"]))
+
+    def test_agents_get_the_orchestration_settings(self):
+        tab = self.make(cfg={"orchestration": {"mode": "collaborative", "max_depth": 3}})
+        self.seed()
+        tab = self.make(cfg={"orchestration": {"mode": "collaborative", "max_depth": 3}})
+        tab.listing.setCurrentRow(0)
+        tab.resume_agent()
+        orch = tab.runner.orchestration
+        self.assertEqual((orch["settings"]["mode"], orch["settings"]["max_depth"]), ("collaborative", 3))
+        self.assertIn("coordinator", orch["roles"])
+
+    def test_delegated_cost_is_added_to_the_agent(self):
+        tab = self.make()
+        tab.agents["x"] = {"role": roles.load_roles()["general"], "cwd": str(self.home), "account": "",
+                           "connection": "claude", "status": "working", "log": [], "session": None, "cost": 0.5,
+                           "item": __import__("PySide6.QtWidgets", fromlist=["x"]).QListWidgetItem()}
+        tab.on_event("x", "extra_cost", 0.25)
+        self.assertAlmostEqual(tab.agents["x"]["cost"], 0.75)
 
     def test_turn_errors_keep_the_agent_ready_and_hooks_are_forwarded(self):
         tab = self.make()

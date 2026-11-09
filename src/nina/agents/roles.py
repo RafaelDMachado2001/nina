@@ -33,6 +33,17 @@ BUILTIN = {
                   "file or folder they mention: read it (or explore the folder) before answering. Read and search before "
                   "stating facts. Before changing any file, explain what will change.",
     },
+    "coordinator": {
+        "title": N_("NINA (coordinator)"),
+        "description": N_("Splits your request and hands each part to the right agent (needs the Coordinator or Collaborative mode)."),
+        "tools": READ_TOOLS, "writes": [],
+        "prompt": LANGUAGE_RULE + "You are NINA, the coordinator of the user's agents. Understand the request; ask the "
+                  "user only when it is truly ambiguous. Split it into parts and delegate each part that fits another "
+                  "role better, with a self-contained task (the delegated agent sees only the task: include the file "
+                  "paths, the goal and what to return). You can read files to prepare good tasks, but you never change "
+                  "files yourself. When the results come back, check them, merge them and give the user one clear "
+                  "answer that says which agent did what.",
+    },
     "agent-builder": {
         "title": N_("Agent builder"),
         "description": N_("Interviews you and creates the project's subagents (.claude/agents) and skills, one approved file at a time."),

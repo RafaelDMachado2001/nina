@@ -55,11 +55,15 @@ def _text_of(content) -> str:
 
 
 class OpenAIAgent:
-    def __init__(self, agent, connection: dict, model: str, gate, emit, max_steps: int = 40, hide_env=()):
+    def __init__(self, agent, connection: dict, model: str, gate, emit, max_steps: int = 40, hide_env=(),
+                 delegate=None, targets=(), extra_prompt: str = "", precheck=None):
         self.agent, self.conn, self.model = agent, connection, model or connection.get("model", "")
         self.gate, self.emit, self.max_steps = gate, emit, max(1, int(max_steps or 40))
         self.bash = tools.find_bash()
         self.tools = tools.offered(agent.role, self.bash is not None)
+        self.delegate, self.extra_prompt, self.precheck = delegate, extra_prompt, precheck
+        if delegate is not None and targets:
+            self.tools.append(tools.delegate_spec(list(targets)))
         self.tool_names = {t["function"]["name"] for t in self.tools}
         self.messages = []
         self.turn = None
@@ -170,9 +174,11 @@ class OpenAIAgent:
         self.messages.append({"role": "user", "content": user_content(message)})
         self._hook("UserPromptSubmit", prompt=clip(_text_of(self.messages[-1]["content"]), 160))
         key = secrets.get_key(self.conn)
-        system = {"role": "system", "content": system_prompt(a.role, a.cwd, self.bash is not None)}
+        system = {"role": "system", "content": system_prompt(a.role, a.cwd, self.bash is not None) + self.extra_prompt}
         steps, last_text = 0, ""
         while True:
+            if getattr(a, "stopped", False):     # ended by the agent that delegated to it
+                raise asyncio.CancelledError()
             self._trim()
             data = await asyncio.to_thread(
                 openai_client.chat, self.conn["base_url"], key, self.model, [system] + self.messages, self.tools,
@@ -217,9 +223,17 @@ class OpenAIAgent:
         self._hook("PreToolUse", tool=name, detail=_summary(args))
         if name not in self.tool_names:
             return {**result, "content": f"Error: the tool {name!r} is not available here"}
-        allowed, why = await self.gate.check(a.id, a.role, a.cwd, name, args, a.pending)
+        if name == "Delegate" and self.precheck is not None:
+            refused = self.precheck(str(args.get("role", "")), str(args.get("task", "")))
+            if refused:
+                return {**result, "content": refused}
+        allowed, why = await self.gate.check(a.id, getattr(a, "gate_role", a.role), a.cwd, name, args, a.pending)
         if not allowed:
             return {**result, "content": f"Error: denied: {why}"}
+        if getattr(a, "stopped", False):
+            raise asyncio.CancelledError()
+        if name == "Delegate":
+            return {**result, "content": await self.delegate(str(args.get("role", "")), str(args.get("task", "")))}
         return {**result, "content": await tools.run(name, args, a.cwd, self.bash, self.hide_env)}
 
     def _usage(self, usage: dict) -> None:
@@ -233,6 +247,8 @@ class OpenAIAgent:
 
 
 def _summary(args: dict) -> str:
+    if args.get("role") and args.get("task"):                       # Delegate
+        return clip(f"{args['role']}: {args['task']}", 120)
     for key in ("command", "file_path", "path", "pattern", "url"):
         if args.get(key):
             return clip(args[key], 120)

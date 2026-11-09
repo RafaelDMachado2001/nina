@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina import connections
+from nina import connections, orchestration
 from nina.agents import managed, managed_store
 from nina.agents import roles as roles_mod
 from nina.i18n import _
@@ -204,6 +204,9 @@ class ManagedTab(QWidget):
         self.runner.max_steps = connections.max_steps(cfg)
         self.runner.connections = connections.custom_connections(cfg)
         conn, model, note = resolve_for(ctx, role, connection_id)
+        self.runner.orchestration = orchestration.runtime(cfg, claude_accounts(ctx), roles_mod.load_roles(ctx.get("roles_dir")),
+                                                          ctx.get("account", "") or "", ctx.get("sdk", True),
+                                                          ctx.get("accounts_root"), conn)
         if resume and conn["id"] != connection_id:      # a session only resumes on the connection it ran on
             resume = None
             note = (note + " " if note else "") + _("A new conversation starts.")
@@ -239,6 +242,12 @@ class ManagedTab(QWidget):
             return
         self.input.clear()
         self.add_log(self.current, "user", text)
+        ctx = self.context()          # the orchestration settings as they are now (the mode may have changed)
+        a = self.agents[self.current]
+        conn = connections.get(ctx.get("cfg") or {}, claude_accounts(ctx), a.get("connection") or "claude") or {"id": "claude", "kind": "claude", "name": "Claude"}
+        self.runner.orchestration = orchestration.runtime(ctx.get("cfg") or {}, claude_accounts(ctx),
+                                                          roles_mod.load_roles(ctx.get("roles_dir")), ctx.get("account", "") or "",
+                                                          ctx.get("sdk", True), ctx.get("accounts_root"), conn)
         self.agents[self.current]["status"] = "working"
         self.runner.send(self.current, text)
         self.update_item(self.current)
@@ -336,6 +345,10 @@ class ManagedTab(QWidget):
         elif kind == "permission":
             self.queue.append((agent_id, payload))
             self.ask_next()
+        elif kind == "extra_cost" and isinstance(payload, (int, float)):
+            agent["cost"] += float(payload)
+        elif kind == "permission_withdrawn":
+            self.queue = [(aid, r) for aid, r in self.queue if r.get("req") != payload.get("req")]
         elif kind == "turn_error":            # an answer failed (quota, key, network...): the agent is still ready
             agent["status"] = "idle"
             self.add_log(agent_id, "error", str(payload))
