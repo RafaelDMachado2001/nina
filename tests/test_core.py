@@ -562,6 +562,15 @@ class ConnectionsWiringTest(IsolatedHome):
             ctx = n.managed_context()
             self.assertEqual((ctx["sdk"], ctx["cfg"]["connections"][0]["id"]), (False, "local"))
 
+    def test_the_chat_opens_without_the_sdk_when_another_ai_is_configured(self):
+        from nina import widget
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        n.cfg["connections"] = [self.LOCAL]
+        with mock.patch.object(widget.managed, "available", return_value=False),                 mock.patch.object(widget.QMessageBox, "information", side_effect=AssertionError("modal shown")):
+            self.assertTrue(n.ensure_chat())
+            self.assertEqual(n.chat_controller.resolved()[0]["id"], "local")   # no Claude here: the other AI
+
     def test_agents_nina_runs_itself_reach_the_agents_panel(self):
         n = Nina()
         self.addCleanup(lambda: (n.shutdown(), n.close()))
