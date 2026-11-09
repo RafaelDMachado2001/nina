@@ -133,6 +133,58 @@ class ChatControllerTest(IsolatedHome):
         c.ask("hi")
         self.assertEqual((self.runner.deny, self.runner.max_steps), (["Bash(rm:*)"], 7))
 
+    # ---- orchestration ---------------------------------------------------------------------------------
+    def test_the_role_follows_the_mode_unless_one_is_picked(self):
+        c = self.make(cfg={"orchestration": {"mode": "coordinator"}})
+        self.assertEqual(c.role_for_chat()["id"], "coordinator")
+        self.assertTrue(c.set_role("architect"))
+        self.assertEqual(c.role_for_chat()["id"], "architect")
+        c.set_role(None)
+        self.ctx["cfg"] = {}
+        self.assertEqual(c.role_for_chat()["id"], "general")
+
+    def test_role_entries_show_the_coordinator_only_when_it_can_work(self):
+        ids = [r for r, _label in self.make().role_entries()]
+        self.assertEqual(ids[0], None)
+        self.assertIn("general", ids)
+        self.assertNotIn("coordinator", ids)
+        ids = [r for r, _label in self.make(cfg={"orchestration": {"mode": "collaborative"}}).role_entries()]
+        self.assertIn("coordinator", ids)
+
+    def test_switching_the_mode_starts_a_new_conversation_with_a_note(self):
+        c = self.make()
+        chat.save_saved({"session": "s1", "connection": "claude", "role": "general"}, self.state)
+        self.ctx["cfg"] = {"orchestration": {"mode": "coordinator"}}
+        c.ask("hi")
+        self.assertIsNone(self.runner.started[-1]["resume"])
+        self.assertEqual(self.runner.started[-1]["role"], "coordinator")
+        self.assertTrue(any(k == "info" and "NINA (coordinator)" in t for k, t in self.messages))
+
+    def test_a_session_of_the_same_role_resumes(self):
+        c = self.make()
+        chat.save_saved({"session": "s1", "connection": "claude", "role": "general"}, self.state)
+        c.ask("hi")
+        self.assertEqual(self.runner.started[-1]["resume"], "s1")
+        c2 = self.make()
+        chat.save_saved({"session": "s2", "connection": "claude"}, self.state)    # saved before roles were kept
+        c2.ask("hi")
+        self.assertEqual(self.runner.started[-1]["resume"], "s2")
+
+    def test_the_runner_gets_orchestration_and_children_use_the_chat_ai(self):
+        c = self.make(cfg={"connections": [self.LOCAL], "orchestration": {"mode": "coordinator"},
+                           "role_connections": {"architect": "local"}})
+        c.set_connection("claude")
+        c.ask("hi")
+        orch = self.runner.orchestration
+        self.assertEqual(orch["settings"]["mode"], "coordinator")
+        roles = orch["roles"]
+        parent = {"id": "claude", "kind": "claude", "name": "Claude", "account": ""}
+        conn, model, account, config_dir = orch["resolve"](roles["architect"], parent)
+        self.assertEqual((conn["id"], model), ("local", "qwen"))                    # its own binding
+        conn, _m, _a, _d = orch["resolve"](roles["writing-reviewer"], parent)
+        self.assertEqual(conn["id"], "claude")                                        # no binding: the chat's AI
+        self.assertEqual(orch["conn_name"]("architect"), "Local AI")
+
     def test_first_message_starts_the_general_role_in_the_default_folder(self):
         c = self.make()
         self.assertTrue(c.ask("hello"))
@@ -486,6 +538,18 @@ class ChatBoxTest(IsolatedHome):
         self.addCleanup(again.close)
         self.assertEqual([again.tabbar.tabText(i) for i in range(2)], ["first topic", "second topic"])
         self.assertEqual(again.controller.tab_id, second_id)
+
+    def test_role_chip_and_orchestration_menu(self):
+        c1, box = self.make()
+        modes = []
+        box.on_orchestration = modes.append
+        self.assertEqual(box.role_btn.text(), "General assistant")
+        c1.set_role("architect")
+        self.assertEqual(box.role_btn.text(), "Architect")
+        saved = chat.load_tabs(self.home / "chats.json")
+        self.assertEqual(saved["tabs"][0]["role"], "architect")
+        box.set_orchestration("coordinator")
+        self.assertEqual(modes, ["coordinator"])
 
     def test_account_chip_shows_and_changes_the_chat_account(self):
         c1, box = self.make()

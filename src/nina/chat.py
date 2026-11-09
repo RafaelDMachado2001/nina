@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina import chat_input, chat_theme, chathistory, chatinfo, config, connections, mentions
+from nina import chat_input, chat_theme, chathistory, chatinfo, config, connections, mentions, orchestration
 from nina.history_view import HistoryView
 from nina.agents import managed
 from nina.agents import roles as roles_mod
@@ -100,7 +100,8 @@ def load_tabs(path: Path | None = None) -> dict:
             conv = t.get("conv")
             conn = t.get("connection") if isinstance(t.get("connection"), str) else None
             account = account if isinstance(account, str) else None
-            tabs.append({"id": tid, "title": str(t.get("title") or "")[:60], "account": account,
+            role = t.get("role") if isinstance(t.get("role"), str) else None
+            tabs.append({"id": tid, "title": str(t.get("title") or "")[:60], "account": account, "role": role,
                          "connection": conn or connections.account_to_connection(account),
                          "conv": conv if isinstance(conv, str) and re.fullmatch(r"[0-9a-z]{1,16}", conv) else None})
     return {"tabs": tabs, "active": data.get("active")} if tabs else {}
@@ -150,6 +151,7 @@ class ChatController(QObject):
         self.tab_id = tab_id
         self.auto = auto
         self.connection = None            # None follows the default (the role's binding, then the default connection)
+        self.role_id = None               # None follows the default role (chat_role, or the coordinator in that mode)
         self.context = context
         self.path = path
         self.runner_factory = runner_factory or (lambda emit, claude_bin: managed.Runner(emit, claude_bin))
@@ -253,9 +255,45 @@ class ChatController(QObject):
         self.account_changed.emit()
         return True
 
+    def roles(self) -> dict:
+        return roles_mod.load_roles(self.context().get("roles_dir"))
+
+    def default_role_id(self) -> str:
+        ctx = self.context()
+        cfg = ctx.get("cfg") or {}
+        return orchestration.chat_default_role({**cfg, "chat_role": ctx.get("chat_role") or cfg.get("chat_role", "")})
+
     def role_for_chat(self) -> dict:
-        known = roles_mod.load_roles(self.context().get("roles_dir"))
-        return known.get(self.context().get("chat_role") or "general") or known["general"]
+        known = self.roles()
+        return known.get(self.role_id or self.default_role_id()) or known["general"]
+
+    def role_entries(self) -> list:
+        """[(role id or None for "default", label)] for the chat's role menu. The coordinator only when it can work."""
+        known = self.roles()
+        manual = orchestration.settings(self.context().get("cfg") or {})["mode"] == "manual"
+        default = known.get(self.default_role_id()) or known["general"]
+        entries = [(None, _("Default ({name})", name=_(default["title"])))]
+        ordered = sorted(known.values(), key=lambda r: (r["id"] != "general", _(r["title"])))
+        return entries + [(r["id"], _(r["title"])) for r in ordered if not (manual and r["id"] == orchestration.COORDINATOR)]
+
+    def set_role(self, role_id) -> bool:
+        """Talk to another agent (role) in this chat (None = the default). The next message starts a new session."""
+        if self.busy or role_id == self.role_id:
+            return False
+        had_conversation = self.agent_id is not None or bool(load_saved(self.path))
+        self.role_id = role_id
+        if self.agent_id is not None:
+            self.runner.stop(self.agent_id)
+            self.agent_id = None
+            self.drop_permissions()
+            self.set_status("none")
+        save_saved({}, self.path)
+        self.session = ""
+        if had_conversation:
+            self.message.emit("info", _("Now talking to {name}: the next message starts a new conversation.",
+                                        name=_(self.role_for_chat()["title"])))
+        self.account_changed.emit()
+        return True
 
     def ask(self, text: str, images=None) -> bool:
         """Send a message, with optional images ({"media_type", "data"}). Returns False when it was not sent
@@ -290,6 +328,9 @@ class ChatController(QObject):
         conn, model, note = self.resolved()
         if note:
             self.message.emit("info", note)
+        role = self.role_for_chat()
+        self.runner.orchestration = orchestration.runtime(cfg, self._accounts(), self.roles(), ctx.get("account", "") or "",
+                                                          ctx.get("sdk", True), ctx.get("accounts_root"), conn)
         account = conn.get("account", "") if conn["kind"] == "claude" else ""
         config_dir = None
         if account and (Path(ctx["accounts_root"]) / account).is_dir():
@@ -297,12 +338,15 @@ class ChatController(QObject):
         saved = load_saved(self.path)
         if saved_connection(saved) != conn["id"]:          # a session of another connection cannot be resumed here
             saved = {}
+        if saved and saved.get("role", role["id"]) != role["id"]:   # nor one of another agent (e.g. the mode changed)
+            self.message.emit("info", _("Now talking to {name}: a new conversation starts.", name=_(role["title"])))
+            saved = {}
         self.resuming = bool(saved)
         # a session only resumes from the folder it ran in; a chat keeps its folder when only the account changes
         cwd = next((c for c in (saved.get("cwd"), self.cwd) if c and Path(c).is_dir()), ctx["default_dir"])
         self.cwd = cwd
         self.session = saved.get("session", "")
-        self.role = self.role_for_chat()
+        self.role = role
         self.set_status("starting")
         self._agent_cost = 0.0                 # the CLI reports cost cumulatively per agent process
         self.agent_id = self.runner.start(self.role, cwd, prompt, account, config_dir,
@@ -353,7 +397,8 @@ class ChatController(QObject):
         elif kind == "session":
             self.session = payload
             save_saved({"session": payload, "connection": self.effective_connection_id(),
-                        "account": self.effective_account(), "cwd": self.folder()}, self.path)
+                        "account": self.effective_account(), "cwd": self.folder(),
+                        "role": (self.role or self.role_for_chat())["id"]}, self.path)
             self.info_changed.emit()
         elif kind == "text":
             self.message.emit("assistant", payload)
@@ -613,11 +658,13 @@ class ChatBox(QWidget):
     SIZES = {"normal": (400, 520), "large": (680, 800)}   # "normal" is the default; "maximized" fills the screen
 
     def __init__(self, controller: ChatController, theme: str = "dark", on_theme=None, factory=None, saved=None,
-                 tabs_path: Path | None = None, history_dir: Path | None = None, on_connections=None):
+                 tabs_path: Path | None = None, history_dir: Path | None = None, on_connections=None,
+                 on_orchestration=None):
         """`factory(tab_id)` builds the controller of a new chat; `saved` is `load_tabs()` of the last run;
         `on_connections()` opens the Connections and agents dialog (a menu entry under the AI chip)."""
         super().__init__()
         self.on_connections = on_connections
+        self.on_orchestration = on_orchestration    # on_orchestration(mode) saves the orchestration mode
         self.controller = controller          # the chat on screen
         self.factory = factory
         self.tabs_path = tabs_path
@@ -658,6 +705,10 @@ class ChatBox(QWidget):
         self.account_btn.setCursor(Qt.PointingHandCursor)
         self.account_btn.setToolTip(_("Account for this chat"))
         self.account_btn.clicked.connect(self.open_account_menu)
+        self.role_btn = QPushButton()
+        self.role_btn.setObjectName("AccountChip")
+        self.role_btn.setCursor(Qt.PointingHandCursor)
+        self.role_btn.clicked.connect(self.open_role_menu)
         self.size_btn = self.icon_button(_("Maximize"))
         self.size_btn.clicked.connect(self.toggle_maximized)
         self.menu_btn = self.icon_button(_("Menu"))
@@ -672,6 +723,7 @@ class ChatBox(QWidget):
         hl.addSpacing(-2)
         hl.addWidget(self.dot)
         hl.addWidget(self.status, 1)
+        hl.addWidget(self.role_btn)
         hl.addWidget(self.account_btn)
         hl.addWidget(self.size_btn)
         hl.addWidget(self.menu_btn)
@@ -897,6 +949,7 @@ class ChatBox(QWidget):
         """Give a reopened tab back its title, account and the messages kept in the history."""
         tab.title = saved["title"]
         tab.controller.connection = saved.get("connection") or connections.account_to_connection(saved.get("account"))
+        tab.controller.role_id = saved.get("role")
         meta = chathistory.load_meta(saved.get("conv") or "", self.history_dir)
         if meta is not None:
             tab.conv, tab.created = meta["id"], meta["created"] or tab.created
@@ -1035,7 +1088,8 @@ class ChatBox(QWidget):
         if self.factory is None:
             return
         save_tabs({"tabs": [{"id": getattr(t.controller, "tab_id", "main"), "title": t.title, "account": t.controller.account,
-                             "connection": t.controller.connection, "conv": t.conv} for t in self.tabs],
+                             "connection": t.controller.connection, "role": t.controller.role_id,
+                             "conv": t.conv} for t in self.tabs],
                    "active": getattr(self.controller, "tab_id", "main")}, self.tabs_path)
 
     # ---- theme -----------------------------------------------------------------------------------
@@ -1084,6 +1138,14 @@ class ChatBox(QWidget):
         menu.addSeparator()
         for mode, label in (("normal", _("Normal size")), ("large", _("Large size")), ("maximized", _("Maximize"))):
             menu.addAction(label).triggered.connect(lambda _c=False, m=mode: self.set_size_mode(m))
+        orch_menu = menu.addMenu(_("Orchestration"))
+        mode = orchestration.settings(self.controller.context().get("cfg") or {})["mode"]
+        for key, label in (("manual", _("Manual: you pick the agent")), ("coordinator", _("Coordinator: NINA delegates")),
+                           ("collaborative", _("Collaborative: agents delegate too"))):
+            act = orch_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(mode == key)
+            act.triggered.connect(lambda _c=False, key=key: self.set_orchestration(key))
         auto = self.controller.auto
         if auto is not None:
             menu.addSeparator()
@@ -1422,8 +1484,33 @@ class ChatBox(QWidget):
         self.popup = pop
         pop.show()
 
+    # ---- agent (role) of this chat --------------------------------------------------------------------
+    def set_orchestration(self, mode: str) -> None:
+        if self.on_orchestration is not None:
+            self.on_orchestration(mode)
+        self.update_account_button()
+
+    def update_role_button(self) -> None:
+        name = _(self.controller.role_for_chat()["title"])
+        self.role_btn.setText(name if len(name) <= 20 else name[:19] + "…")
+        self.role_btn.setToolTip(_("Agent of this chat") + f": {name}")
+        self.role_btn.setEnabled(not self.controller.busy)
+
+    def open_role_menu(self) -> None:
+        c = self.controller
+        menu = QMenu(self)
+        for i, (role_id, label) in enumerate(c.role_entries()):
+            if i == 1:
+                menu.addSeparator()
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(c.role_id == role_id)
+            act.triggered.connect(lambda _c=False, role_id=role_id: self.controller.set_role(role_id))
+        menu.exec(self.role_btn.mapToGlobal(QPoint(0, self.role_btn.height())))
+
     # ---- account of this chat ------------------------------------------------------------------------
     def update_account_button(self) -> None:
+        self.update_role_button()
         conn = self.controller.resolved()[0]
         name = (conn.get("account") or _("default")) if conn["kind"] == "claude" else conn["name"]
         self.account_btn.setText(name if len(name) <= 14 else name[:13] + "…")

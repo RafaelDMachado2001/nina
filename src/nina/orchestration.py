@@ -62,3 +62,36 @@ def delegation_prompt(targets: list, roles: dict, conn_name) -> str:
     return ("\n\nYou can hand a task to another agent with the Delegate tool (role + a self-contained task: the other "
             "agent sees only the task, not this conversation). It answers once with its result. Delegate when a part "
             "of the request fits another role better; do the rest yourself. Available roles:\n" + "\n".join(lines))
+
+
+def runtime(cfg: dict, accounts: list, roles: dict, active_account: str, sdk: bool, accounts_root,
+            chat_connection: dict) -> dict:
+    """What a Runner needs to delegate: the settings, the roles, `resolve(role, parent_connection)` ->
+    (connection, model, claude account, config dir) and `conn_name(role_id)` for the prompts.
+
+    A role with its own binding runs on it; a role without one runs on the delegating agent's connection."""
+    from pathlib import Path
+
+    from nina import connections
+
+    def bound(role: dict) -> bool:
+        return role.get("id") in (cfg.get("role_connections") or {}) or bool(role.get("connection"))
+
+    def resolve(role: dict, parent: dict) -> tuple:
+        if bound(role):
+            conn, model, _note = connections.resolve(cfg, accounts, explicit=None, role_id=role.get("id", ""),
+                                                     role=role, active_account=active_account, sdk=sdk)
+        else:
+            conn = parent
+            model = str(role.get("model") or "") if conn.get("kind") == "claude" else conn.get("model", "")
+        account = conn.get("account", "") if conn.get("kind") == "claude" else ""
+        config_dir = None
+        if account and accounts_root and (Path(accounts_root) / account).is_dir():
+            config_dir = str(Path(accounts_root) / account)
+        return conn, model, account, config_dir
+
+    def conn_name(role_id: str) -> str:
+        role = roles.get(role_id)
+        return resolve(role, chat_connection)[0].get("name", "") if role else ""
+
+    return {"settings": settings(cfg), "roles": roles, "resolve": resolve, "conn_name": conn_name}

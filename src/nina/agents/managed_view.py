@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina import connections
+from nina import connections, orchestration
 from nina.agents import managed, managed_store
 from nina.agents import roles as roles_mod
 from nina.i18n import _
@@ -204,6 +204,9 @@ class ManagedTab(QWidget):
         self.runner.max_steps = connections.max_steps(cfg)
         self.runner.connections = connections.custom_connections(cfg)
         conn, model, note = resolve_for(ctx, role, connection_id)
+        self.runner.orchestration = orchestration.runtime(cfg, claude_accounts(ctx), roles_mod.load_roles(ctx.get("roles_dir")),
+                                                          ctx.get("account", "") or "", ctx.get("sdk", True),
+                                                          ctx.get("accounts_root"), conn)
         if resume and conn["id"] != connection_id:      # a session only resumes on the connection it ran on
             resume = None
             note = (note + " " if note else "") + _("A new conversation starts.")

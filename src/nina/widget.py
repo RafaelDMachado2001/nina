@@ -627,6 +627,13 @@ class Nina(QWidget):
                                    roles=roles_mod.load_roles(config.roles_dir()))
         dialog.exec()
 
+    def set_orchestration(self, mode: str) -> None:
+        """Manual, coordinator or collaborative (see nina.orchestration): applies to the next message of every chat."""
+        current = dict(self.cfg.get("orchestration") or {})
+        current["mode"] = mode
+        self.cfg["orchestration"] = current
+        config.save_config(self.cfg)
+
     def save_connections(self, new: dict) -> None:
         for key in ("connections", "default_connection", "role_connections"):
             self.cfg[key] = new.get(key, self.cfg.get(key))
@@ -675,7 +682,7 @@ class Nina(QWidget):
         first = saved["tabs"][0]["id"] if saved else "main"
         self.chat_box = chat.ChatBox(self.make_chat_controller(first), self.cfg.get("chat_theme", "dark"),
                                      self.save_chat_theme, factory=self.make_chat_controller, saved=saved,
-                                     on_connections=self.open_connections)
+                                     on_connections=self.open_connections, on_orchestration=self.set_orchestration)
         return True
 
     @property

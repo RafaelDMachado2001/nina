@@ -338,4 +338,11 @@ CATALOG = {
     "NINA (coordinator)": "NINA (coordenadora)",
     "Splits your request and hands each part to the right agent (needs the Coordinator or Collaborative mode).": "Divide o seu pedido e entrega cada parte ao agente certo (precisa do modo Coordenadora ou Colaborativo).",
     "Hand this task to {role}:": "Entregar esta tarefa a {role}:",
+    "Now talking to {name}: the next message starts a new conversation.": "Agora conversando com {name}: a próxima mensagem começa uma nova conversa.",
+    "Now talking to {name}: a new conversation starts.": "Agora conversando com {name}: uma nova conversa começa.",
+    "Orchestration": "Orquestração",
+    "Manual: you pick the agent": "Manual: você escolhe o agente",
+    "Coordinator: NINA delegates": "Coordenadora: a NINA delega",
+    "Collaborative: agents delegate too": "Colaborativo: os agentes também delegam",
+    "Agent of this chat": "Agente desta conversa",
 }
