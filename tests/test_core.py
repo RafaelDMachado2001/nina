@@ -561,3 +561,51 @@ class ConnectionsWiringTest(IsolatedHome):
         ctrl = n.make_chat_controller("t1")
         ctrl.hook_event.emit({"ev": "UserPromptSubmit", "sid": "nina-s1", "prompt": "hello", "cwd": str(self.home)})
         self.assertIsNotNone(n.agents.get("nina-s1"))
+
+
+class ConnectionsCliTest(IsolatedHome):
+    def run_cli(self, *args):
+        import contextlib
+        import io
+
+        from nina import app as nina_app
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = nina_app.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_list_shows_connections_without_secrets(self):
+        self.write_config({"connections": [{"id": "gem", "kind": "openai", "name": "Gemini", "model": "g-1",
+                                            "base_url": "https://x/v1", "key": {"source": "env", "name": "SECRET_VAR"}}]})
+        with mock.patch.dict(os.environ, {"SECRET_VAR": "sk-very-secret"}):
+            code, out, _err = self.run_cli("--connections")
+        self.assertEqual(code, 0)
+        self.assertIn("claude", out)
+        self.assertIn("gem", out)
+        self.assertIn("g-1", out)
+        self.assertNotIn("sk-very-secret", out)
+
+    def test_test_connection(self):
+        from tests.fake_openai import FakeOpenAI, reply
+        api = FakeOpenAI()
+        self.addCleanup(api.close)
+        self.write_config({"connections": [{"id": "loc", "kind": "openai", "name": "Local", "model": "m",
+                                            "base_url": api.base_url}]})
+        api.script.append(reply("OK"))
+        code, out, _err = self.run_cli("--test-connection", "loc")
+        self.assertEqual(code, 0)
+        self.assertIn("OK", out)
+        api.script.append((401, {"error": {"message": "bad key"}}, {}))
+        code, _out, err = self.run_cli("--test-connection", "loc")
+        self.assertEqual(code, 1)
+        self.assertIn("bad key", err)
+        code, _out, err = self.run_cli("--test-connection", "nope")
+        self.assertEqual(code, 1)
+
+    def test_the_menu_opens_the_connections_window(self):
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        texts = [a.text() for a in n.build_menu().actions()]
+        self.assertIn("Connections and agents...", texts)
+        n.save_connections({"connections": [], "default_connection": "", "role_connections": {"general": "claude"}})
+        self.assertEqual(config.load_config()["role_connections"], {"general": "claude"})

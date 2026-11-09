@@ -478,6 +478,8 @@ class Nina(QWidget):
         else:
             acct_menu.addAction(_("No accounts in {path}", path=config.short_path(str(config.ACCOUNTS_ROOT)))).setEnabled(False)
 
+        menu.addAction(_("Connections and agents...")).triggered.connect(self.open_connections)
+
         link = QAction(_("Connect to Claude Code"), menu, checkable=True, checked=claude_hooks.hooks_installed())
         link.setToolTip(_("Installs the hooks that make NINA react to what Claude Code is doing"))
         link.triggered.connect(self.toggle_hooks)
@@ -604,6 +606,21 @@ class Nina(QWidget):
         except Exception as e:
             print(f"NINA: could not record an agent event: {e}", file=sys.stderr)
 
+    def open_connections(self) -> None:
+        """The AIs NINA can use and which one each role runs on."""
+        from nina.agents import roles as roles_mod
+        from nina.connections_view import ConnectionsDialog
+        dialog = ConnectionsDialog(self.cfg, config.list_accounts(), self.save_connections,
+                                   roles=roles_mod.load_roles(config.roles_dir()))
+        dialog.exec()
+
+    def save_connections(self, new: dict) -> None:
+        for key in ("connections", "default_connection", "role_connections"):
+            self.cfg[key] = new.get(key, self.cfg.get(key))
+        config.save_config(self.cfg)
+        if self.chat_box is not None:
+            self.chat_box.update_account_button()
+
     def managed_available(self) -> bool:
         """Agents and the chat need either the Claude Agent SDK or a connection to another AI."""
         if managed_view is None or managed is None:
@@ -643,7 +660,8 @@ class Nina(QWidget):
             chat.chathistory.prune(days, keep={t.get("conv") for t in saved.get("tabs", [])})
         first = saved["tabs"][0]["id"] if saved else "main"
         self.chat_box = chat.ChatBox(self.make_chat_controller(first), self.cfg.get("chat_theme", "dark"),
-                                     self.save_chat_theme, factory=self.make_chat_controller, saved=saved)
+                                     self.save_chat_theme, factory=self.make_chat_controller, saved=saved,
+                                     on_connections=self.open_connections)
         return True
 
     @property
