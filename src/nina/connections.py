@@ -9,6 +9,8 @@ Two kinds:
 
 `resolve()` picks the connection and the model for one chat or agent.
 """
+from pathlib import Path
+
 from nina.i18n import _
 
 KINDS = ("claude", "openai")
@@ -31,6 +33,17 @@ PRESETS = {
                  "key_url": "https://lmstudio.ai"},
     "custom": {"name": "Custom (OpenAI-compatible)", "base_url": "", "needs_key": False, "key_url": ""},
 }
+
+
+def claude_accounts(listed, active: str = "", root=None, also=()) -> list:
+    """Claude account slugs: the listed ones, the active one, `also`, and every folder in `root` (when given)."""
+    found = {a for a in list(listed or []) + [active] + list(also) if a}
+    if root:
+        try:
+            found |= {d.name for d in Path(root).iterdir() if d.is_dir()}
+        except OSError:
+            pass
+    return sorted(found)
 
 
 def claude_connections(accounts: list) -> list:

@@ -27,9 +27,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from nina import connections
 from nina.agents import managed, managed_store
 from nina.agents import roles as roles_mod
 from nina.i18n import _
+
+
+def claude_accounts(ctx: dict) -> list:
+    return connections.claude_accounts(ctx.get("accounts"), ctx.get("account", ""), ctx.get("accounts_root"))
+
+
+def resolve_for(ctx: dict, role: dict, explicit: str | None = None) -> tuple:
+    """(connection, model, note) for an agent of `role`, explicitly on `explicit` or by the role's binding/default.
+    A role's own binding model is kept when the explicit choice is that same connection."""
+    cfg, accounts = ctx.get("cfg") or {}, claude_accounts(ctx)
+    kw = dict(role_id=role["id"], role=role, active_account=ctx.get("account", "") or "", sdk=ctx.get("sdk", True))
+    by_role = connections.resolve(cfg, accounts, explicit=None, **kw)
+    if explicit is None or by_role[0]["id"] == explicit:
+        return by_role
+    return connections.resolve(cfg, accounts, explicit=explicit, **kw)
 
 STATUS_SYMBOL = {"starting": "○", "working": "●", "idle": "✓", "closed": "✕", "error": "!"}
 STATUS_COLOR = {"starting": "#8a909c", "working": "#7ed321", "idle": "#6fb3ff", "closed": "#6b7280", "error": "#f08c4a"}
@@ -65,13 +81,10 @@ class NewAgentDialog(QDialog):
         folder_row = QHBoxLayout()
         folder_row.addWidget(self.folder, 1)
         folder_row.addWidget(browse)
-        self.account = QComboBox()
-        for slug in ctx.get("accounts", []):
-            self.account.addItem(slug, slug)
-        if not ctx.get("accounts"):
-            self.account.addItem(_("(default account)"), "")
-        idx = self.account.findData(ctx.get("account", ""))
-        self.account.setCurrentIndex(max(0, idx))
+        self.ctx = ctx
+        self.connection = QComboBox()
+        for conn in connections.all_connections(ctx.get("cfg") or {}, claude_accounts(ctx)):
+            self.connection.addItem(conn["name"], conn["id"])
         self.prompt = QPlainTextEdit()
         self.prompt.setPlaceholderText(_("What do you want the agent to do?"))
         self.prompt.setMinimumHeight(110)
@@ -79,7 +92,7 @@ class NewAgentDialog(QDialog):
         form.addRow(_("Role:"), self.role)
         form.addRow("", self.description)
         form.addRow(_("Folder:"), folder_row)
-        form.addRow(_("Account:"), self.account)
+        form.addRow(_("AI:"), self.connection)
         form.addRow(_("Request:"), self.prompt)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText(_("Start"))
@@ -93,6 +106,8 @@ class NewAgentDialog(QDialog):
 
     def on_role(self) -> None:
         role = self.roles[self.role.currentData()]
+        idx = self.connection.findData(resolve_for(self.ctx, role)[0]["id"])
+        self.connection.setCurrentIndex(max(0, idx))
         writes = ", ".join(role["writes"]) if role["writes"] else _("none (read-only)")
         self.description.setText(_(role["description"]) + "\n" + _("Writes allowed in: {writes}. Every write asks for confirmation.", writes=writes))
 
@@ -112,12 +127,13 @@ class NewAgentDialog(QDialog):
     def values(self) -> dict:
         return {"role": self.roles[self.role.currentData()],
                 "cwd": str(Path(self.folder.text()).expanduser()),
-                "account": self.account.currentData() or "",
+                "connection": self.connection.currentData() or "claude",
                 "prompt": self.prompt.toPlainText().strip()}
 
 
 class ManagedTab(QWidget):
     attention = Signal(str)                  # short text for the mascot to say
+    hook_event = Signal(dict)                # hook-style events of agents NINA runs itself, for the agents panel
     _event = Signal(str, str, object)        # emitted from the agents' thread, delivered on the UI thread
 
     def __init__(self, context, parent=None, store_path=None):
@@ -180,21 +196,35 @@ class ManagedTab(QWidget):
         self.refresh_controls()
 
     # ---- lifecycle ---------------------------------------------------------------------------
+    def launch(self, role: dict, cwd: str, prompt, connection_id: str | None, resume: str | None = None) -> tuple:
+        """Start (or resume) an agent of `role` on a connection. Returns (agent id, connection, note)."""
+        ctx = self.context()
+        cfg = ctx.get("cfg") or {}
+        self.runner.deny = list((cfg.get("permissions") or {}).get("deny") or [])
+        self.runner.max_steps = int(cfg.get("max_tool_steps") or 40)
+        conn, model, note = resolve_for(ctx, role, connection_id)
+        account = conn.get("account", "") if conn["kind"] == "claude" else ""
+        config_dir = None
+        if account and ctx.get("accounts_root") and (Path(ctx["accounts_root"]) / account).is_dir():
+            config_dir = str(Path(ctx["accounts_root"]) / account)
+        agent_id = self.runner.start(role, cwd, prompt, account, config_dir, resume=resume, connection=conn, model=model)
+        return agent_id, conn, note
+
     def new_agent(self) -> None:
         ctx = self.context()
         dialog = NewAgentDialog(self, roles_mod.load_roles(ctx.get("roles_dir")), ctx)
         if dialog.exec() != QDialog.Accepted:
             return
         v = dialog.values()
-        config_dir = None
-        if v["account"] and (Path(ctx["accounts_root"]) / v["account"]).is_dir():
-            config_dir = str(Path(ctx["accounts_root"]) / v["account"])
-        agent_id = self.runner.start(v["role"], v["cwd"], v["prompt"], v["account"], config_dir)
+        agent_id, conn, note = self.launch(v["role"], v["cwd"], v["prompt"], v["connection"])
         item = QListWidgetItem()
         item.setData(Qt.UserRole, agent_id)
-        self.agents[agent_id] = {"role": v["role"], "cwd": v["cwd"], "account": v["account"], "status": "starting",
+        self.agents[agent_id] = {"role": v["role"], "cwd": v["cwd"], "account": conn.get("account", ""),
+                                 "connection": conn["id"], "status": "starting",
                                  "log": [], "session": None, "cost": 0.0, "item": item}
         self.listing.addItem(item)
+        if note:
+            self.add_log(agent_id, "info", note)
         self.add_log(agent_id, "user", v["prompt"])
         self.update_item(agent_id)
         self.listing.setCurrentItem(item)
@@ -227,6 +257,7 @@ class ManagedTab(QWidget):
     # ---- remembering agents between runs ---------------------------------------------------------
     def persist(self) -> None:
         managed_store.save([{"role": a["role"]["id"], "cwd": a["cwd"], "account": a["account"],
+                             "connection": a.get("connection") or "claude",
                              "session": a["session"], "cost": a["cost"], "log": a["log"]}
                             for a in self.agents.values()], self.store_path)
 
@@ -240,7 +271,8 @@ class ManagedTab(QWidget):
             item = QListWidgetItem()
             agent_id = f"saved-{i}"
             item.setData(Qt.UserRole, agent_id)
-            self.agents[agent_id] = {"role": role, "cwd": saved["cwd"], "account": saved["account"], "status": "closed",
+            self.agents[agent_id] = {"role": role, "cwd": saved["cwd"], "account": saved["account"],
+                                     "connection": saved["connection"], "status": "closed",
                                      "log": list(saved["log"]), "session": saved["session"], "cost": saved["cost"],
                                      "item": item}
             self.listing.addItem(item)
@@ -258,16 +290,12 @@ class ManagedTab(QWidget):
         a = self.agents.get(self.current)
         if a is None or a["status"] not in ("closed", "error") or not a["session"]:
             return
-        ctx = self.context()
-        config_dir = None
-        if a["account"] and (Path(ctx["accounts_root"]) / a["account"]).is_dir():
-            config_dir = str(Path(ctx["accounts_root"]) / a["account"])
         old_id, item = self.current, a["item"]
-        new_id = self.runner.start(a["role"], a["cwd"], None, a["account"], config_dir, resume=a["session"])
+        new_id, _conn, note = self.launch(a["role"], a["cwd"], None, a.get("connection") or "claude", resume=a["session"])
         item.setData(Qt.UserRole, new_id)
         self.agents[new_id] = {**self.agents.pop(old_id), "status": "starting"}
         self.current = new_id
-        self.add_log(new_id, "info", _("Conversation resumed."))
+        self.add_log(new_id, "info", note or _("Conversation resumed."))
         self.update_item(new_id)
         self.refresh_controls()
 
@@ -304,6 +332,11 @@ class ManagedTab(QWidget):
         elif kind == "permission":
             self.queue.append((agent_id, payload))
             self.ask_next()
+        elif kind == "turn_error":            # an answer failed (quota, key, network...): the agent is still ready
+            agent["status"] = "idle"
+            self.add_log(agent_id, "error", str(payload))
+        elif kind == "hook":
+            self.hook_event.emit(dict(payload))
         if kind in ("session", "result") or (kind == "status" and payload == "closed"):
             self.persist()
         self.update_item(agent_id)
@@ -372,4 +405,9 @@ class ManagedTab(QWidget):
                  "closed": _("closed"), "error": _("error")}.get(a["status"], a["status"])
         session = " · " + _("session {id}", id=a["session"][:8]) if a["session"] else ""
         self.header.setText(f"<b>{_(a['role']['title'])}</b> · <span style='color:{color}'>● {label}</span>{session}<br>"
-                            f"<span style='color:#8a909c'>{a['cwd']} · " + _("account {account}", account=a["account"] or _("default")) + "</span>")
+                            f"<span style='color:#8a909c'>{a['cwd']} · " + self.connection_label(a) + "</span>")
+
+    def connection_label(self, a: dict) -> str:
+        ctx = self.context()
+        conn = connections.get(ctx.get("cfg") or {}, claude_accounts(ctx), a.get("connection") or "claude")
+        return conn["name"] if conn else str(a.get("connection") or "")

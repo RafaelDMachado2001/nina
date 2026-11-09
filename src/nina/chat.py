@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina import chat_input, chat_theme, chathistory, chatinfo, config, mentions
+from nina import chat_input, chat_theme, chathistory, chatinfo, config, connections, mentions
 from nina.history_view import HistoryView
 from nina.agents import managed
 from nina.agents import roles as roles_mod
@@ -52,6 +52,13 @@ def load_saved(path: Path | None = None) -> dict:
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) and isinstance(data.get("session"), str) and data["session"] else {}
+
+
+def saved_connection(saved: dict) -> str:
+    """The connection a saved session belongs to; sessions saved before connections existed name a Claude account."""
+    if saved.get("connection"):
+        return str(saved["connection"])
+    return connections.account_to_connection(saved.get("account")) or "claude"
 
 
 def save_saved(data: dict, path: Path | None = None) -> None:
@@ -91,8 +98,10 @@ def load_tabs(path: Path | None = None) -> dict:
             seen.add(tid)
             account = t.get("account")
             conv = t.get("conv")
-            tabs.append({"id": tid, "title": str(t.get("title") or "")[:60],
-                         "account": account if isinstance(account, str) else None,
+            conn = t.get("connection") if isinstance(t.get("connection"), str) else None
+            account = account if isinstance(account, str) else None
+            tabs.append({"id": tid, "title": str(t.get("title") or "")[:60], "account": account,
+                         "connection": conn or connections.account_to_connection(account),
                          "conv": conv if isinstance(conv, str) and re.fullmatch(r"[0-9a-z]{1,16}", conv) else None})
     return {"tabs": tabs, "active": data.get("active")} if tabs else {}
 
@@ -126,7 +135,8 @@ class ChatController(QObject):
     attention = Signal(str)           # short text for the mascot to say (permission requests)
     permission_asked = Signal(dict)   # {"req", "tool", "detail", "remember"}: the window shows Allow / Deny
     permission_cleared = Signal()
-    account_changed = Signal()
+    account_changed = Signal()        # the connection of this chat changed (the name is kept for older callers)
+    hook_event = Signal(dict)         # hook-style events of agents NINA runs itself, for the agents panel
     info_changed = Signal()           # model, context, usage or cost changed
     finished = Signal()               # an answer is complete
     _event = Signal(str, str, object)   # from the Runner's thread, delivered on the UI thread
@@ -139,7 +149,7 @@ class ChatController(QObject):
         super().__init__(parent)
         self.tab_id = tab_id
         self.auto = auto
-        self.account = None               # None follows the default account (the mascot's menu); otherwise this chat's own
+        self.connection = None            # None follows the default (the role's binding, then the default connection)
         self.context = context
         self.path = path
         self.runner_factory = runner_factory or (lambda emit, claude_bin: managed.Runner(emit, claude_bin))
@@ -168,21 +178,66 @@ class ChatController(QObject):
         return {"model": "", "ctx_tokens": 0, "ctx_max": 0, "cost": 0.0, "tokens": 0}
 
     def rate(self) -> dict | None:
-        return self.RATE.get(self.effective_account())
+        return self.RATE.get(self.effective_connection_id())
 
     def folder(self) -> str:
         return self.cwd or self.context().get("default_dir", "") or ""
 
+    # ---- which AI this chat runs on -------------------------------------------------------------
+    @property
+    def account(self):
+        """Older name: the Claude account slug of an explicit Claude choice (None when following the default)."""
+        conn = self.connection or ""
+        return conn.split(":", 1)[1] if conn.startswith("claude:") else None
+
+    @account.setter
+    def account(self, slug) -> None:
+        self.connection = connections.account_to_connection(slug)
+
+    def _accounts(self) -> list:
+        """Claude accounts: the listed ones, the active one and any account folder that exists."""
+        ctx = self.context()
+        return connections.claude_accounts(ctx.get("accounts"), ctx.get("account", ""), ctx.get("accounts_root"),
+                                           also=[self.account] if self.account else [])
+
+    def _resolve(self, explicit) -> tuple:
+        ctx = self.context()
+        role = self.role_for_chat()
+        return connections.resolve(ctx.get("cfg") or {}, self._accounts(), explicit=explicit, role_id=role["id"],
+                                   role=role, active_account=ctx.get("account", "") or "", sdk=ctx.get("sdk", True))
+
+    def resolved(self) -> tuple:
+        """(connection, model, note) for the next message."""
+        return self._resolve(self.connection)
+
+    def effective_connection_id(self) -> str:
+        return self.resolved()[0]["id"]
+
+    def connection_name(self) -> str:
+        return self.resolved()[0]["name"]
+
     def effective_account(self) -> str:
-        return self.context().get("account", "") or "" if self.account is None else self.account
+        """The Claude account this chat runs on ("" for the plain ~/.claude or another kind of connection)."""
+        conn = self.resolved()[0]
+        return conn.get("account", "") if conn["kind"] == "claude" else ""
+
+    def connection_entries(self) -> list:
+        """[(connection id or None for "default", label)] for the chat's connection menu."""
+        default = self._resolve(None)[0]
+        entries = [(None, _("Default ({name})", name=default["name"]))]
+        cfg = self.context().get("cfg") or {}
+        return entries + [(c["id"], c["name"]) for c in connections.all_connections(cfg, self._accounts())]
 
     def set_account(self, slug) -> bool:
-        """Use another Claude account in this chat (None = the default one). Sessions belong to an account, so the
-        next message starts a new Claude session; the messages already on screen stay."""
-        if self.busy or slug == self.account:
+        return self.set_connection(connections.account_to_connection(slug))
+
+    def set_connection(self, conn_id) -> bool:
+        """Run this chat on another connection (None = the default). Sessions belong to a connection, so the next
+        message starts a new session; the messages already on screen stay."""
+        if self.busy or conn_id == self.connection:
             return False
         had_conversation = self.agent_id is not None or bool(load_saved(self.path))
-        self.account = slug
+        self.connection = conn_id
         if self.agent_id is not None:
             self.runner.stop(self.agent_id)
             self.agent_id = None
@@ -193,8 +248,8 @@ class ChatController(QObject):
         self.info = self.fresh_info()
         self.info_changed.emit()
         if had_conversation:
-            self.message.emit("info", _("Account changed to {account}: the next message starts a new Claude session.",
-                                        account=self.effective_account() or _("default")))
+            self.message.emit("info", _("Now using {name}: the next message starts a new session.",
+                                        name=self.connection_name()))
         self.account_changed.emit()
         return True
 
@@ -225,15 +280,21 @@ class ChatController(QObject):
 
     def start(self, prompt: str) -> None:
         ctx = self.context()
+        cfg = ctx.get("cfg") or {}
         if self.runner is None:
             self.runner = self.runner_factory(self._event.emit, managed.find_claude_bin(ctx.get("claude_bin", "")))
             self.runner.auto = self.auto
-        account = self.effective_account()
+        self.runner.deny = list((cfg.get("permissions") or {}).get("deny") or [])
+        self.runner.max_steps = int(cfg.get("max_tool_steps") or 40)
+        conn, model, note = self.resolved()
+        if note:
+            self.message.emit("info", note)
+        account = conn.get("account", "") if conn["kind"] == "claude" else ""
         config_dir = None
         if account and (Path(ctx["accounts_root"]) / account).is_dir():
             config_dir = str(Path(ctx["accounts_root"]) / account)
         saved = load_saved(self.path)
-        if saved.get("account", account) != account:      # a session of another account cannot be resumed here
+        if saved_connection(saved) != conn["id"]:          # a session of another connection cannot be resumed here
             saved = {}
         self.resuming = bool(saved)
         # a session only resumes from the folder it ran in; a chat keeps its folder when only the account changes
@@ -244,7 +305,7 @@ class ChatController(QObject):
         self.set_status("starting")
         self._agent_cost = 0.0                 # the CLI reports cost cumulatively per agent process
         self.agent_id = self.runner.start(self.role, cwd, prompt, account, config_dir,
-                                          resume=saved.get("session"))
+                                          resume=saved.get("session"), connection=conn, model=model)
 
     def retry(self) -> bool:
         """Send the last message again (after an error)."""
@@ -290,7 +351,8 @@ class ChatController(QObject):
                 self.finished.emit()
         elif kind == "session":
             self.session = payload
-            save_saved({"session": payload, "account": self.effective_account(), "cwd": self.folder()}, self.path)
+            save_saved({"session": payload, "connection": self.effective_connection_id(),
+                        "account": self.effective_account(), "cwd": self.folder()}, self.path)
             self.info_changed.emit()
         elif kind == "text":
             self.message.emit("assistant", payload)
@@ -311,7 +373,7 @@ class ChatController(QObject):
             chatinfo.add_day(tokens=int(payload))
             self.info_changed.emit()
         elif kind == "ratelimit":
-            self.RATE[self.effective_account()] = payload
+            self.RATE[self.effective_connection_id()] = payload
             self.info_changed.emit()
         elif kind == "result":
             cost = payload.get("cost")
@@ -334,6 +396,13 @@ class ChatController(QObject):
         elif kind == "permission":
             self.queue.append(payload)
             self.ask_next()
+        elif kind == "turn_error":         # an answer failed (quota, key, network...): the agent is still ready
+            self.message.emit("error", str(payload))
+            self.drop_permissions()
+            self.resuming = False
+            self.set_status("idle")
+        elif kind == "hook":
+            self.hook_event.emit(dict(payload))
 
     def drop_permissions(self) -> None:
         """The agent is gone: its pending requests were denied by the runner, so forget them here too."""
@@ -543,9 +612,11 @@ class ChatBox(QWidget):
     SIZES = {"normal": (400, 520), "large": (680, 800)}   # "normal" is the default; "maximized" fills the screen
 
     def __init__(self, controller: ChatController, theme: str = "dark", on_theme=None, factory=None, saved=None,
-                 tabs_path: Path | None = None, history_dir: Path | None = None):
-        """`factory(tab_id)` builds the controller of a new chat; `saved` is `load_tabs()` of the last run."""
+                 tabs_path: Path | None = None, history_dir: Path | None = None, on_connections=None):
+        """`factory(tab_id)` builds the controller of a new chat; `saved` is `load_tabs()` of the last run;
+        `on_connections()` opens the Connections and agents dialog (a menu entry under the AI chip)."""
         super().__init__()
+        self.on_connections = on_connections
         self.controller = controller          # the chat on screen
         self.factory = factory
         self.tabs_path = tabs_path
@@ -824,7 +895,7 @@ class ChatBox(QWidget):
     def revive(self, tab: ChatTab, saved: dict) -> None:
         """Give a reopened tab back its title, account and the messages kept in the history."""
         tab.title = saved["title"]
-        tab.controller.account = saved.get("account")
+        tab.controller.connection = saved.get("connection") or connections.account_to_connection(saved.get("account"))
         meta = chathistory.load_meta(saved.get("conv") or "", self.history_dir)
         if meta is not None:
             tab.conv, tab.created = meta["id"], meta["created"] or tab.created
@@ -963,7 +1034,7 @@ class ChatBox(QWidget):
         if self.factory is None:
             return
         save_tabs({"tabs": [{"id": getattr(t.controller, "tab_id", "main"), "title": t.title, "account": t.controller.account,
-                    "conv": t.conv} for t in self.tabs],
+                             "connection": t.controller.connection, "conv": t.conv} for t in self.tabs],
                    "active": getattr(self.controller, "tab_id", "main")}, self.tabs_path)
 
     # ---- theme -----------------------------------------------------------------------------------
@@ -1239,7 +1310,8 @@ class ChatBox(QWidget):
 
     def snapshot(self, tab: ChatTab) -> dict:
         c = tab.controller
-        return {"id": tab.conv, "title": tab.title, "account": c.effective_account(), "cwd": c.folder(),
+        return {"id": tab.conv, "title": tab.title, "account": c.effective_account(),
+                "connection": c.effective_connection_id(), "cwd": c.folder(),
                 "session": c.session, "created": tab.created, "updated": time.time(), "cost": c.info["cost"],
                 "tokens": c.info["tokens"], "entries": tab.entries}
 
@@ -1287,12 +1359,13 @@ class ChatBox(QWidget):
         if self.factory is None or rec is None:
             return
         controller = self.factory(new_tab_id())
-        controller.account = rec["account"] or None
+        controller.connection = rec.get("connection") or connections.account_to_connection(rec["account"])
         controller.cwd = rec["cwd"] or None
         controller.session = rec["session"]
         controller.info.update(cost=rec["cost"], tokens=rec["tokens"])
         if rec["session"]:
-            save_saved({"session": rec["session"], "account": rec["account"], "cwd": rec["cwd"]}, controller.path)
+            save_saved({"session": rec["session"], "account": rec["account"],
+                        "connection": controller.connection or "", "cwd": rec["cwd"]}, controller.path)
         self.add_tab(controller, rec["title"], conv=rec["id"], entries=[tuple(e) for e in rec["entries"]],
                      created=rec["created"])
 
@@ -1323,7 +1396,7 @@ class ChatBox(QWidget):
     def details_html(self) -> str:
         t = chat_theme.tokens(self.theme)
         folder, branch, info, rate = self.info_context()
-        rows = chatinfo.details(config.short_path(folder) if folder else "", branch, self.controller.effective_account(),
+        rows = chatinfo.details(config.short_path(folder) if folder else "", branch, self.controller.connection_name(),
                                 info, rate, chatinfo.load_day(), datetime.now())
         body = "".join(f'<tr><td style="color:{t["text2"]}; padding-right:12px">{html_lib.escape(k)}</td>'
                        f'<td>{html_lib.escape(v)}</td></tr>' for k, v in rows)
@@ -1350,9 +1423,10 @@ class ChatBox(QWidget):
 
     # ---- account of this chat ------------------------------------------------------------------------
     def update_account_button(self) -> None:
-        name = self.controller.effective_account() or _("default")
+        conn = self.controller.resolved()[0]
+        name = (conn.get("account") or _("default")) if conn["kind"] == "claude" else conn["name"]
         self.account_btn.setText(name if len(name) <= 14 else name[:13] + "…")
-        self.account_btn.setToolTip(_("Account for this chat") + f": {name}")
+        self.account_btn.setToolTip(_("AI for this chat") + f": {conn['name']}")
         self.account_btn.setEnabled(not self.controller.busy)
 
     def on_info_changed(self, tab: ChatTab) -> None:
@@ -1367,20 +1441,20 @@ class ChatBox(QWidget):
             self.update_account_button()
 
     def open_account_menu(self) -> None:
+        """The AIs this chat can run on: the default, every Claude account and every connection you added."""
         c = self.controller
-        accounts = (c.context() or {}).get("accounts") or []
-        default = (c.context() or {}).get("account", "") or ""
         menu = QMenu(self)
-        entries = [(None, _("Default account ({account})", account=default or _("default")))]
-        entries += [(a, a) for a in accounts]
-        for slug, label in entries:
+        entries = c.connection_entries()
+        for i, (conn_id, label) in enumerate(entries):
+            if i == 1:
+                menu.addSeparator()
             act = menu.addAction(label)
             act.setCheckable(True)
-            act.setChecked(c.account == slug)
-            act.triggered.connect(lambda _c=False, slug=slug: self.controller.set_account(slug))
-        if not accounts:
+            act.setChecked(c.connection == conn_id)
+            act.triggered.connect(lambda _c=False, conn_id=conn_id: self.controller.set_connection(conn_id))
+        if self.on_connections is not None:
             menu.addSeparator()
-            menu.addAction(_("No accounts found")).setEnabled(False)
+            menu.addAction(_("Connections and agents..."), self.on_connections)
         menu.exec(self.account_btn.mapToGlobal(QPoint(0, self.account_btn.height())))
 
     def update_size_button(self) -> None:

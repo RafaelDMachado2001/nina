@@ -51,6 +51,7 @@ def clean(raw) -> dict | None:
             entries.append([str(e[0]), str(e[1])[:MAX_TEXT]])
     return {
         "id": raw["id"], "title": str(raw.get("title") or "")[:80], "account": str(raw.get("account") or ""),
+        "connection": str(raw.get("connection") or ""),
         "cwd": str(raw.get("cwd") or ""), "session": str(raw.get("session") or ""),
         "created": float(raw.get("created") or 0), "updated": float(raw.get("updated") or 0),
         "cost": float(raw.get("cost") or 0), "tokens": int(raw.get("tokens") or 0),
@@ -67,7 +68,8 @@ def _write(target: Path, data: bytes) -> None:
 
 def _meta_of(rec: dict) -> dict:
     first = next((t for k, t in rec["entries"] if k == "user"), "")
-    return {"id": rec["id"], "title": rec["title"], "account": rec["account"], "cwd": rec["cwd"],
+    return {"id": rec["id"], "title": rec["title"], "account": rec["account"], "connection": rec["connection"],
+            "cwd": rec["cwd"],
             "session": rec["session"], "created": rec["created"], "updated": rec["updated"], "cost": rec["cost"],
             "tokens": rec["tokens"], "count": message_count(rec), "preview": " ".join(first.split())[:PREVIEW]}
 

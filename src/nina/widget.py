@@ -10,7 +10,7 @@ from PySide6.QtCore import QPoint, QPointF, QProcess, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QWidget
 
-from nina import autoapprove, claude_hooks, config, launcher, plugins
+from nina import autoapprove, claude_hooks, config, connections, launcher, plugins
 from nina.config import APP_NAME
 from nina.i18n import N_, _
 from nina.sprites import FRAMES, GRID_H, GRID_W, PALETTE, render_frame
@@ -605,12 +605,16 @@ class Nina(QWidget):
             print(f"NINA: could not record an agent event: {e}", file=sys.stderr)
 
     def managed_available(self) -> bool:
-        return managed_view is not None and managed is not None and managed.available()
+        """Agents and the chat need either the Claude Agent SDK or a connection to another AI."""
+        if managed_view is None or managed is None:
+            return False
+        return managed.available() or bool(connections.custom_connections(self.cfg))
 
     def managed_context(self) -> dict:
         return {"accounts": config.list_accounts(), "account": self.cfg.get("account", ""),
                 "accounts_root": config.ACCOUNTS_ROOT, "default_dir": config.default_dir_of(self.cfg),
-                "roles_dir": config.roles_dir(), "claude_bin": self.cfg.get("claude_bin", "")}
+                "roles_dir": config.roles_dir(), "claude_bin": self.cfg.get("claude_bin", ""),
+                "cfg": self.cfg, "sdk": managed is not None and managed.available()}
 
     def make_managed_tab(self):
         if not self.managed_available():
@@ -621,6 +625,7 @@ class Nina(QWidget):
             print(f"NINA: managed agents unavailable: {e}", file=sys.stderr)
             return None
         tab.attention.connect(lambda text: self.say(text, 4))
+        tab.hook_event.connect(self.record_agent_event)
         QApplication.instance().aboutToQuit.connect(tab.shutdown)
         return tab
 
@@ -629,7 +634,8 @@ class Nina(QWidget):
         if self.chat_box is not None:
             return True
         if not self.managed_available():
-            QMessageBox.information(self, APP_NAME, _("Talking to NINA needs managed agents: install the 'agents' extra."))
+            QMessageBox.information(self, APP_NAME, _("Talking to NINA needs managed agents (the 'agents' extra) or a "
+                                                      "connection to another AI (right click → Connections and agents...)."))
             return False
         saved = chat.load_tabs()
         days = self.cfg.get("history_keep_days", 0)
@@ -649,6 +655,7 @@ class Nina(QWidget):
         ctrl = chat.ChatController(lambda: {**self.managed_context(), "chat_role": self.cfg.get("chat_role", "")},
                                    path=chat.tab_state_path(tab_id), parent=self, tab_id=tab_id, auto=self.auto_mode())
         ctrl.attention.connect(lambda text: self.say(text, 4))
+        ctrl.hook_event.connect(self.record_agent_event)
         ctrl.state_changed.connect(lambda state, c=ctrl: self.on_chat_state(c, state))
         ctrl.message.connect(lambda *_a, c=ctrl: self.on_chat_activity(c))
         ctrl.finished.connect(self.celebrate)

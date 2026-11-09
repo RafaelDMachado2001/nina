@@ -11,9 +11,14 @@ class FakeRunner:
         self.emit = emit
         self.started, self.sent, self.stopped, self.interrupted, self.resolved = [], [], [], [], []
 
-    def start(self, role, cwd, prompt, account="", config_dir=None, resume=None):
+    connections = None
+
+    def start(self, role, cwd, prompt, account="", config_dir=None, resume=None, connection=None, model=""):
         self.started.append({"role": role["id"], "cwd": cwd, "prompt": prompt, "account": account,
                              "config_dir": config_dir, "resume": resume})
+        if self.connections is None:
+            self.connections = []
+        self.connections.append({"id": (connection or {}).get("id"), "kind": (connection or {}).get("kind"), "model": model})
         return f"agent-{len(self.started)}"
 
     def send(self, agent_id, text):
@@ -52,6 +57,76 @@ class ChatControllerTest(IsolatedHome):
         c.message.connect(lambda k, t: self.messages.append((k, t)))
         c.state_changed.connect(self.states.append)
         return c
+
+    LOCAL = {"id": "local", "kind": "openai", "name": "Local AI", "base_url": "http://localhost:11434/v1", "model": "qwen"}
+
+    def test_an_openai_connection_runs_the_chat(self):
+        c = self.make(cfg={"connections": [self.LOCAL]})
+        self.assertTrue(c.set_connection("local"))
+        c.ask("hi")
+        self.assertEqual(self.runner.connections[-1], {"id": "local", "kind": "openai", "model": "qwen"})
+        self.assertEqual((self.runner.started[-1]["account"], self.runner.started[-1]["config_dir"]), ("", None))
+        self.assertEqual(c.connection_name(), "Local AI")
+
+    def test_without_a_choice_claude_is_used_as_before(self):
+        c = self.make(cfg={"connections": [self.LOCAL]})
+        c.ask("hi")
+        self.assertEqual(self.runner.connections[-1]["id"], "claude")
+
+    def test_the_chat_role_binding_picks_the_connection(self):
+        c = self.make(cfg={"connections": [self.LOCAL], "role_connections": {"general": {"connection": "local", "model": "big"}}})
+        c.ask("hi")
+        self.assertEqual(self.runner.connections[-1], {"id": "local", "kind": "openai", "model": "big"})
+
+    def test_a_deleted_connection_falls_back_with_a_note(self):
+        c = self.make(cfg={"connections": []})
+        c.connection = "gone"
+        c.ask("hi")
+        self.assertEqual(self.runner.connections[-1]["id"], "claude")
+        self.assertTrue(any(k == "info" and "gone" in t for k, t in self.messages))
+
+    def test_a_session_resumes_only_on_its_own_connection(self):
+        c = self.make(cfg={"connections": [self.LOCAL]})
+        c.set_connection("local")
+        chat.save_saved({"session": "s1", "connection": "local"}, self.state)
+        c.ask("again")
+        self.assertEqual(self.runner.started[-1]["resume"], "s1")
+        c2 = self.make(cfg={"connections": [self.LOCAL]})
+        chat.save_saved({"session": "s1", "connection": "local"}, self.state)
+        c2.ask("on claude")                                       # this chat follows the default (Claude)
+        self.assertIsNone(self.runner.started[-1]["resume"])
+
+    def test_turn_errors_keep_the_chat_ready(self):
+        c = self.make()
+        done = []
+        c.finished.connect(lambda: done.append(1))
+        c.ask("hi")
+        c.on_event("agent-1", "status", "working")
+        c.on_event("agent-1", "turn_error", "Quota reached")
+        self.assertIn(("error", "Quota reached"), self.messages)
+        self.assertEqual((c.status, done), ("idle", []))
+        self.assertTrue(c.ask("again"))
+        self.assertEqual(self.runner.sent, [("agent-1", "again")])
+
+    def test_hook_events_are_forwarded(self):
+        c = self.make()
+        got = []
+        c.hook_event.connect(got.append)
+        c.ask("hi")
+        c.on_event("agent-1", "hook", {"ev": "Stop", "sid": "s"})
+        self.assertEqual(got, [{"ev": "Stop", "sid": "s"}])
+
+    def test_connection_entries_list_claude_accounts_and_custom_connections(self):
+        (self.accounts / "work").mkdir(parents=True)
+        c = self.make(accounts=["work"], cfg={"connections": [self.LOCAL]})
+        ids = [cid for cid, _label in c.connection_entries()]
+        self.assertEqual(ids, [None, "claude", "claude:work", "local"])
+
+    def test_deny_list_and_step_limit_reach_the_runner(self):
+        c = self.make(cfg={"permissions": {"deny": ["Bash(rm:*)"]}, "max_tool_steps": 7})
+        self.runner_deny = None
+        c.ask("hi")
+        self.assertEqual((self.runner.deny, self.runner.max_steps), (["Bash(rm:*)"], 7))
 
     def test_first_message_starts_the_general_role_in_the_default_folder(self):
         c = self.make()

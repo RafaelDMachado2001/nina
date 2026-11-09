@@ -537,3 +537,27 @@ class ExportTest(IsolatedHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConnectionsWiringTest(IsolatedHome):
+    LOCAL = {"id": "local", "kind": "openai", "name": "Local AI", "base_url": "http://localhost:11434/v1", "model": "qwen"}
+
+    def test_the_chat_is_available_with_only_a_custom_connection(self):
+        from nina import widget
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        with mock.patch.object(widget.managed, "available", return_value=False):
+            self.assertFalse(n.managed_available())
+            n.cfg["connections"] = [self.LOCAL]
+            self.assertTrue(n.managed_available())
+            ctx = n.managed_context()
+            self.assertEqual((ctx["sdk"], ctx["cfg"]["connections"][0]["id"]), (False, "local"))
+
+    def test_agents_nina_runs_itself_reach_the_agents_panel(self):
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        if n.agents is None:
+            self.skipTest("agents store unavailable")
+        ctrl = n.make_chat_controller("t1")
+        ctrl.hook_event.emit({"ev": "UserPromptSubmit", "sid": "nina-s1", "prompt": "hello", "cwd": str(self.home)})
+        self.assertIsNotNone(n.agents.get("nina-s1"))
