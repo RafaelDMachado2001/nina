@@ -302,3 +302,13 @@ class ClaudeDelegationTest(unittest.TestCase):
         runner._prepare(parent)
         future = asyncio.run_coroutine_threadsafe(runner.delegate(parent, "writing-reviewer", "check"), runner.loop)
         self.assertEqual(future.result(timeout=10), "claude child answer")
+
+
+class DelegateDisplayTest(unittest.TestCase):
+    def test_the_chat_line_names_the_role_and_the_task(self):
+        from nina.agents import openai_agent
+        self.assertEqual(managed.tool_summary({"role": "writing-reviewer", "task": "Check post.md"}),
+                         "writing-reviewer: Check post.md")
+        self.assertEqual(openai_agent._summary({"role": "general", "task": "Write resumo.md"}), "general: Write resumo.md")
+        self.assertEqual(managed.display_tool("mcp__nina__delegate"), "Delegate")
+        self.assertEqual(managed.display_tool("Read"), "Read")

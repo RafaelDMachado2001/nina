@@ -19,7 +19,7 @@ from nina.agents.permissions import WRITE_TOOLS, Gate, decide, describe
 from nina.agents.store import clip, redact
 from nina.i18n import _
 
-__all__ = ["Runner", "available", "can_run", "decide", "describe", "find_claude_bin", "has_content", "query_arg", "tool_summary"]
+__all__ = ["Runner", "available", "can_run", "display_tool", "decide", "describe", "find_claude_bin", "has_content", "query_arg", "tool_summary"]
 
 try:
     import claude_agent_sdk as sdk
@@ -72,7 +72,14 @@ def find_claude_bin(configured: str = "") -> str | None:
     return None
 
 
+def display_tool(name: str) -> str:
+    """The name shown in the chat (Claude sees NINA's Delegate as an MCP tool)."""
+    return "Delegate" if name == "mcp__nina__delegate" else name
+
+
 def tool_summary(tool_input: dict) -> str:
+    if tool_input.get("role") and tool_input.get("task"):           # Delegate
+        return clip(f"{tool_input['role']}: {tool_input['task']}", 120)
     for key in ("command", "file_path", "notebook_path", "path", "pattern", "url", "query", "description", "prompt"):
         if tool_input.get(key):
             return clip(tool_input[key], 120)
@@ -438,7 +445,7 @@ class Runner:
                 if block_kind == "TextBlock" and block.text.strip():
                     self._emit(agent.id, "text", redact(block.text))
                 elif block_kind == "ToolUseBlock":
-                    self._emit(agent.id, "tool", {"name": block.name, "summary": tool_summary(block.input or {})})
+                    self._emit(agent.id, "tool", {"name": display_tool(block.name), "summary": tool_summary(block.input or {})})
         elif kind == "ResultMessage":
             if getattr(msg, "session_id", None) and not agent.session_id:
                 agent.session_id = msg.session_id

@@ -239,6 +239,8 @@ class OpenAIAgent:
 
 
 def _summary(args: dict) -> str:
+    if args.get("role") and args.get("task"):                       # Delegate
+        return clip(f"{args['role']}: {args['task']}", 120)
     for key in ("command", "file_path", "path", "pattern", "url"):
         if args.get(key):
             return clip(args[key], 120)
