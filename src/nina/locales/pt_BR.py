@@ -281,4 +281,12 @@ CATALOG = {
     "Connection '{id}' not found; using {name}.": "Conexão '{id}' não encontrada; usando {name}.",
     "Blocked by your NINA permissions: {rule}": "Bloqueado pelas suas permissões da NINA: {rule}",
     "Fetch this web page:": "Buscar esta página da web:",
+    "The server did not answer with JSON: {text}": "O servidor não respondeu em JSON: {text}",
+    "No answer within {seconds}s.": "Sem resposta em {seconds}s.",
+    "Could not reach the server: {message}": "Não foi possível falar com o servidor: {message}",
+    "The API key was refused ({status}): {message}": "A chave de API foi recusada ({status}): {message}",
+    "Not found ({status}): {message}": "Não encontrado ({status}): {message}",
+    " (try again in {seconds}s)": " (tente de novo em {seconds}s)",
+    "Quota or rate limit reached{retry}: {message}": "Cota ou limite de uso atingido{retry}: {message}",
+    "The server answered {status}: {message}": "O servidor respondeu {status}: {message}",
 }
