@@ -56,12 +56,12 @@ def _text_of(content) -> str:
 
 class OpenAIAgent:
     def __init__(self, agent, connection: dict, model: str, gate, emit, max_steps: int = 40, hide_env=(),
-                 delegate=None, targets=(), extra_prompt: str = ""):
+                 delegate=None, targets=(), extra_prompt: str = "", precheck=None):
         self.agent, self.conn, self.model = agent, connection, model or connection.get("model", "")
         self.gate, self.emit, self.max_steps = gate, emit, max(1, int(max_steps or 40))
         self.bash = tools.find_bash()
         self.tools = tools.offered(agent.role, self.bash is not None)
-        self.delegate, self.extra_prompt = delegate, extra_prompt
+        self.delegate, self.extra_prompt, self.precheck = delegate, extra_prompt, precheck
         if delegate is not None and targets:
             self.tools.append(tools.delegate_spec(list(targets)))
         self.tool_names = {t["function"]["name"] for t in self.tools}
@@ -221,6 +221,10 @@ class OpenAIAgent:
         self._hook("PreToolUse", tool=name, detail=_summary(args))
         if name not in self.tool_names:
             return {**result, "content": f"Error: the tool {name!r} is not available here"}
+        if name == "Delegate" and self.precheck is not None:
+            refused = self.precheck(str(args.get("role", "")), str(args.get("task", "")))
+            if refused:
+                return {**result, "content": refused}
         allowed, why = await self.gate.check(a.id, getattr(a, "gate_role", a.role), a.cwd, name, args, a.pending)
         if not allowed:
             return {**result, "content": f"Error: denied: {why}"}

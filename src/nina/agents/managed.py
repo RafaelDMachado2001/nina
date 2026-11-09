@@ -115,6 +115,7 @@ class Runner:
         self.children = {}           # delegated agent id -> {"parent", "texts", "done", "error", "cost"}
         self.loop = asyncio.new_event_loop()
         self.gate = Gate(self.loop, self._emit, lambda: self.auto, lambda: self.deny)
+        self.gate.describer = self._describe
         self.thread = threading.Thread(target=self._main, name="nina-managed", daemon=True)
         self.thread.start()
 
@@ -175,7 +176,7 @@ class Runner:
     def _enqueue(self, agent: _Agent, text) -> None:
         if agent.queue is not None:
             if agent.depth == 0:
-                agent.budget = {"left": self._settings()["max_delegations"]}   # one budget per message of the user
+                self._prepare(agent)            # current settings (e.g. "ask" turned back on) and a fresh budget
             agent.queue.put_nowait(text)
 
     def _stop(self, agent: _Agent) -> None:
@@ -201,6 +202,20 @@ class Runner:
         from nina import orchestration
         return (self.orchestration or {}).get("settings") or orchestration.settings({})
 
+    def _describe(self, tool: str, tool_input: dict) -> str | None:
+        """The Delegate question names the role and the AI it would run on (it may cost money)."""
+        if tool != "Delegate" or not self.orchestration:
+            return None
+        role = (self.orchestration.get("roles") or {}).get(str(tool_input.get("role", "")))
+        if role is None:
+            return None
+        try:
+            ai = (self.orchestration.get("conn_name") or str)(role["id"])
+        except Exception:
+            ai = ""
+        head = _("Hand this task to {role} (on {ai}):", role=_(role.get("title", role["id"])), ai=ai or "?")
+        return f"{head}\n\n{tool_input.get('task', '')}"
+
     def targets_for(self, agent: _Agent) -> list:
         """Roles this agent may delegate to (empty in manual mode)."""
         from nina import orchestration
@@ -214,6 +229,8 @@ class Runner:
         for a top-level agent's new message."""
         if self.targets_for(agent) and not self._settings()["ask"]:
             agent.gate_role = {**agent.role, "tools": list(agent.role.get("tools", [])) + ["Delegate"]}
+        else:
+            agent.gate_role = agent.role
         if agent.depth == 0:
             agent.budget = {"left": self._settings()["max_delegations"]}
 
@@ -245,25 +262,35 @@ class Runner:
             self._emit(parent.id, kind, {**payload, "tool": f"{child.label} · {payload.get('tool', '')}"})
         elif kind == "usage":
             self._emit(parent.id, "usage", payload)
-        elif kind == "result" and isinstance(payload, dict) and isinstance(payload.get("cost"), (int, float)):
-            state["cost"] += float(payload["cost"])
+        elif kind == "result" and isinstance(payload, dict):
+            if isinstance(payload.get("cost"), (int, float)):
+                state["cost"] += float(payload["cost"])
+            if payload.get("error") or payload.get("errors"):
+                state["error"] = "; ".join(payload.get("errors") or []) or "the answer ended with an error"
+
+    def delegation_error(self, parent: _Agent, role_id: str, task: str) -> str:
+        """Why this delegation cannot happen ("" when it can). Checked before asking the user, so nobody is asked
+        to approve something that would be refused anyway."""
+        targets = self.targets_for(parent)
+        if role_id not in targets:
+            return "Error: " + (f"you cannot delegate to {role_id!r}. Available: {', '.join(targets)}" if targets
+                                else "delegation is not available here (the orchestration mode does not allow it)")
+        if not str(task or "").strip():
+            return "Error: the task is empty"
+        budget = parent.budget if parent.budget is not None else self._root(parent).budget
+        if budget is not None and budget["left"] <= 0:
+            limit = self._settings()["max_delegations"]
+            return f"Error: the delegation limit for this request was reached ({limit}). Do the rest yourself."
+        return ""
 
     async def delegate(self, parent: _Agent, role_id: str, task: str) -> str:
         """Hand `task` to an agent of `role_id` and return its answer. Never raises (except cancellation): every
         failure is an "Error: ..." text the delegating agent can react to."""
         roles = (self.orchestration or {}).get("roles") or {}
-        targets = self.targets_for(parent)
-        if role_id not in targets:
-            return "Error: " + (f"you cannot delegate to {role_id!r}. Available: {', '.join(targets)}" if targets
-                                else "delegation is not available here")
-        if not str(task or "").strip():
-            return "Error: the task is empty"
+        refused = self.delegation_error(parent, role_id, task)
+        if refused:
+            return refused
         budget = parent.budget if parent.budget is not None else self._root(parent).budget
-        if budget is not None:
-            if budget["left"] <= 0:
-                limit = self._settings()["max_delegations"]
-                return f"Error: the delegation limit for this request was reached ({limit}). Do the rest yourself."
-            budget["left"] -= 1
         role = roles[role_id]
         try:
             conn, model, account, config_dir = self.orchestration["resolve"](role, parent.connection or {"id": "claude", "kind": "claude", "name": "Claude"})
@@ -271,6 +298,8 @@ class Runner:
             return f"Error: no AI for {role_id}: {e}"
         if conn.get("kind") != "openai" and sdk is None:
             return f"Error: {role_id} runs on Claude, which is not installed here"
+        if budget is not None:
+            budget["left"] -= 1                   # counted once the delegation really starts
         child = _Agent(uuid.uuid4().hex[:12], role, parent.cwd, account, config_dir, conn, model)
         child.depth, child.parent, child.budget = parent.depth + 1, parent, budget
         child.label = f"{_(role.get('title', role_id))} · {conn.get('name', conn.get('id', ''))}"
@@ -295,8 +324,9 @@ class Runner:
         self._parent_hook(child, "SubagentStop", last=clip(answer or state["error"], 300))
         if state["cost"]:
             self._emit(parent.id, "tool", {"name": child.label, "summary": f"US$ {state['cost']:.4f}"})
-        if state["error"] and not answer:
-            return f"Error: {child.label} failed: {state['error']}"
+        if state["error"]:                        # a failure stays a failure, even after some text
+            partial = f"\n\nWhat it said before failing:\n{answer[:4000]}" if answer else ""
+            return f"Error: {child.label} failed: {state['error']}{partial}"
         if len(answer) > 20000:
             answer = answer[:20000] + "\n… [truncated]"
         return answer or f"Error: {child.label} gave no answer"
@@ -319,6 +349,7 @@ class Runner:
     def _end_child(self, child: _Agent, run, cancel: bool) -> None:
         for req in list(child.pending):
             self.gate.resolve(req, False, _("Agent closed."), False)
+            self.emit(self._root(child).id, "permission_withdrawn", {"req": req})   # the question leaves the screen
         if child.queue is not None:
             child.queue.put_nowait(None)
         if cancel and not run.done():
@@ -385,7 +416,8 @@ class Runner:
                 extra = orchestration.delegation_prompt(targets, roles, (self.orchestration or {}).get("conn_name") or str)
             await OpenAIAgent(agent, agent.connection, agent.model, self.gate, self._emit, self.max_steps,
                               hide, delegate=(lambda role, task: self.delegate(agent, role, task)) if targets else None,
-                              targets=targets, extra_prompt=extra).run(prompt)
+                              targets=targets, extra_prompt=extra,
+                              precheck=lambda role, task: self.delegation_error(agent, role, task)).run(prompt)
             return
         agent.queue = asyncio.Queue()
         agent.task = asyncio.current_task()
@@ -456,6 +488,10 @@ class Runner:
                 "errors": list(getattr(msg, "errors", None) or [])})
 
     async def _can_use_tool(self, agent: _Agent, tool: str, tool_input: dict):
+        if tool == "mcp__nina__delegate":
+            refused = self.delegation_error(agent, str(tool_input.get("role", "")), str(tool_input.get("task", "")))
+            if refused:
+                return sdk.PermissionResultDeny(message=refused)
         allowed, message = await self.gate.check(agent.id, agent.gate_role, agent.cwd, tool, tool_input, agent.pending)
         if allowed:
             return sdk.PermissionResultAllow()

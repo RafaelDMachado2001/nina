@@ -176,6 +176,63 @@ class DelegationTest(unittest.TestCase):
         result = [m for m in self.api.chat_requests()[-1]["messages"] if m["role"] == "tool"][-1]["content"]
         self.assertTrue(result.startswith("Error:") and "Quota exceeded" in result, result)
 
+    def test_a_child_that_fails_after_talking_is_a_failure(self):
+        self.orchestrate(ask=False)
+        self.api.script += [self.delegate_call(),
+                            reply("Let me read post.md first.", tool_calls=[("r1", "Read", {"file_path": "post.md"})]),
+                            (401, {"error": {"message": "bad key"}}, {}), reply("sorry")]
+        aid = self.start("review")
+        self.wait_idle(aid)
+        result = [m for m in self.api.chat_requests()[-1]["messages"] if m["role"] == "tool"][-1]["content"]
+        self.assertTrue(result.startswith("Error:") and "bad key" in result, result)
+
+    def test_the_delegation_prompt_names_the_role_and_its_ai(self):
+        self.orchestrate()
+        self.api.script += [self.delegate_call(), reply("x"), reply("y")]
+        aid = self.start("review")
+        req = self.wait_for("permission")
+        self.assertIn("Writing reviewer", req["detail"])
+        self.assertIn("OtherAI", req["detail"])
+        self.runner.resolve(req["req"], False)
+        self.wait_idle(aid)
+
+    def test_turning_asking_back_on_takes_effect_at_the_next_message(self):
+        self.orchestrate(ask=False)
+        self.api.script += [reply("hi")]
+        aid = self.start("hello")
+        self.wait_idle(aid)
+        self.orchestrate(ask=True)
+        self.api.script += [self.delegate_call(), reply("done")]
+        self.runner.send(aid, "now delegate")
+        req = self.wait_for("permission")
+        self.assertEqual(req["tool"], "Delegate")
+        self.runner.resolve(req["req"], False)
+        self.wait_idle(aid, 2)
+
+    def test_switching_to_manual_stops_delegation_of_a_live_agent(self):
+        self.orchestrate(ask=False)
+        self.api.script += [reply("hi")]
+        aid = self.start("hello")
+        self.wait_idle(aid)
+        self.orchestrate("manual")
+        self.api.script += [self.delegate_call(), reply("ok")]
+        self.runner.send(aid, "delegate please")
+        self.wait_idle(aid, 2)
+        result = [m for m in self.api.chat_requests()[-1]["messages"] if m["role"] == "tool"][-1]["content"]
+        self.assertTrue(result.startswith("Error:"), result)
+
+    def test_interrupting_the_parent_withdraws_the_childs_request(self):
+        self.orchestrate(ask=False)
+        self.api.script += [self.delegate_call(role="general", task="Fix post.md"),
+                            reply(tool_calls=[("w1", "Write", {"file_path": "post.md", "content": "x"})]),
+                            reply("after")]
+        aid = self.start("fix")
+        req = self.wait_for("permission")
+        self.runner.interrupt(aid)
+        withdrawn = self.wait_for("permission_withdrawn")
+        self.assertEqual(withdrawn["req"], req["req"])
+        self.assertIn(("permission_withdrawn", withdrawn), self.kinds(aid))
+
     def test_interrupting_the_parent_cancels_the_child(self):
         self.orchestrate(ask=False)
         self.api.script += [self.delegate_call(role="general", task="Fix post.md"),

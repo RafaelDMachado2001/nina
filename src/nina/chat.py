@@ -152,6 +152,7 @@ class ChatController(QObject):
         self.auto = auto
         self.connection = None            # None follows the default (the role's binding, then the default connection)
         self.role_id = None               # None follows the default role (chat_role, or the coordinator in that mode)
+        self.launched = None              # (role id, orchestration settings) the running agent was started with
         self.context = context
         self.path = path
         self.runner_factory = runner_factory or (lambda emit, claude_bin: managed.Runner(emit, claude_bin))
@@ -258,14 +259,25 @@ class ChatController(QObject):
     def roles(self) -> dict:
         return roles_mod.load_roles(self.context().get("roles_dir"))
 
-    def default_role_id(self) -> str:
+    def default_role_id(self, manual: bool = False) -> str:
+        """The role of a chat that has not picked one (`manual`: as if orchestration were off)."""
         ctx = self.context()
-        cfg = ctx.get("cfg") or {}
+        cfg = dict(ctx.get("cfg") or {})
+        if manual:
+            cfg.pop("orchestration", None)
         return orchestration.chat_default_role({**cfg, "chat_role": ctx.get("chat_role") or cfg.get("chat_role", "")})
 
     def role_for_chat(self) -> dict:
         known = self.roles()
-        return known.get(self.role_id or self.default_role_id()) or known["general"]
+        role_id = self.role_id or self.default_role_id()
+        manual = orchestration.settings(self.context().get("cfg") or {})["mode"] == "manual"
+        if role_id == orchestration.COORDINATOR and manual:     # it cannot delegate in manual mode: use the default
+            role_id = self.default_role_id()
+        return known.get(role_id) or known["general"]
+
+    def fingerprint(self) -> tuple:
+        st = orchestration.settings(self.context().get("cfg") or {})
+        return self.role_for_chat()["id"], tuple(sorted((k, repr(v)) for k, v in st.items()))
 
     def role_entries(self) -> list:
         """[(role id or None for "default", label)] for the chat's role menu. The coordinator only when it can work."""
@@ -309,6 +321,12 @@ class ChatController(QObject):
             self.message.emit("image", image["data"])
         body = mentions.expand_home(text)
         message = {"text": body, "images": images} if images else body
+        if self.agent_id is not None and self.status == "idle" and self.launched != self.fingerprint():
+            # The agent or the orchestration settings changed since it started (e.g. the user switched to Manual):
+            # restart it, so the next answer never runs with the old role, tools or limits.
+            self.runner.stop(self.agent_id)
+            self.agent_id = None
+            self.drop_permissions()
         if self.agent_id is not None and self.status == "idle":
             self.set_status("working")
             self.runner.send(self.agent_id, message)
@@ -338,7 +356,8 @@ class ChatController(QObject):
         saved = load_saved(self.path)
         if saved_connection(saved) != conn["id"]:          # a session of another connection cannot be resumed here
             saved = {}
-        if saved and saved.get("role", role["id"]) != role["id"]:   # nor one of another agent (e.g. the mode changed)
+        legacy_role = self.default_role_id(manual=True)       # sessions saved before roles were kept
+        if saved and saved.get("role", legacy_role) != role["id"]:   # nor one of another agent (e.g. the mode changed)
             self.message.emit("info", _("Now talking to {name}: a new conversation starts.", name=_(role["title"])))
             saved = {}
         self.resuming = bool(saved)
@@ -347,6 +366,7 @@ class ChatController(QObject):
         self.cwd = cwd
         self.session = saved.get("session", "")
         self.role = role
+        self.launched = self.fingerprint()
         self.set_status("starting")
         self._agent_cost = 0.0                 # the CLI reports cost cumulatively per agent process
         self.agent_id = self.runner.start(self.role, cwd, prompt, account, config_dir,
@@ -442,6 +462,12 @@ class ChatController(QObject):
         elif kind == "permission":
             self.queue.append(payload)
             self.ask_next()
+        elif kind == "permission_withdrawn":   # a delegated agent was stopped: its question no longer applies
+            self.queue = [q for q in self.queue if q.get("req") != payload.get("req")]
+            if self.current_req is not None and self.current_req.get("req") == payload.get("req"):
+                self.current_req = None
+                self.permission_cleared.emit()
+                self.ask_next()
         elif kind == "turn_error":         # an answer failed (quota, key, network...): the agent is still ready
             self.message.emit("error", str(payload))
             self.drop_permissions()

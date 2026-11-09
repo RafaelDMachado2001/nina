@@ -7,6 +7,8 @@ from nina import chat, chathistory
 
 
 class FakeRunner:
+    orchestration = None
+
     def __init__(self, emit, claude_bin):
         self.emit = emit
         self.started, self.sent, self.stopped, self.interrupted, self.resolved = [], [], [], [], []
@@ -184,6 +186,62 @@ class ChatControllerTest(IsolatedHome):
         conn, _m, _a, _d = orch["resolve"](roles["writing-reviewer"], parent)
         self.assertEqual(conn["id"], "claude")                                        # no binding: the chat's AI
         self.assertEqual(orch["conn_name"]("architect"), "Local AI")
+
+    # ---- final review (orchestration) --------------------------------------------------------------------
+    def test_a_live_agent_is_restarted_when_the_mode_changes(self):
+        self.ctx_cfg = {"orchestration": {"mode": "collaborative", "ask": False}}
+        c = self.make(cfg=self.ctx_cfg)
+        c.ask("one")
+        c.on_event("agent-1", "session", "sess-1")
+        c.on_event("agent-1", "status", "idle")
+        self.ctx["cfg"] = {"orchestration": {"mode": "manual"}}               # the user picks Manual
+        c.ask("two")
+        self.assertIn("agent-1", self.runner.stopped)
+        self.assertEqual(self.runner.sent, [])
+        self.assertEqual(self.runner.started[-1]["resume"], "sess-1")         # same role: the conversation goes on
+        self.assertEqual(self.runner.orchestration["settings"]["mode"], "manual")
+
+    def test_a_live_agent_of_the_old_default_role_gives_way_to_the_new_one(self):
+        c = self.make()
+        c.ask("one")
+        c.on_event("agent-1", "session", "sess-1")
+        c.on_event("agent-1", "status", "idle")
+        self.ctx["cfg"] = {"orchestration": {"mode": "coordinator"}}
+        c.ask("two")
+        self.assertEqual((self.runner.started[-1]["role"], self.runner.started[-1]["resume"]), ("coordinator", None))
+        self.assertTrue(any(k == "info" and "NINA (coordinator)" in t for k, t in self.messages))
+
+    def test_an_unchanged_live_agent_just_gets_the_message(self):
+        c = self.make(cfg={"orchestration": {"mode": "collaborative"}})
+        c.ask("one")
+        c.on_event("agent-1", "status", "idle")
+        c.ask("two")
+        self.assertEqual(self.runner.sent, [("agent-1", "two")])
+
+    def test_a_session_saved_before_roles_counts_as_the_general_role(self):
+        c = self.make(cfg={"orchestration": {"mode": "coordinator"}})
+        chat.save_saved({"session": "old", "connection": "claude"}, self.state)
+        c.ask("hi")
+        self.assertIsNone(self.runner.started[-1]["resume"])
+
+    def test_the_coordinator_picked_in_a_tab_is_not_used_in_manual_mode(self):
+        c = self.make(cfg={"orchestration": {"mode": "coordinator"}})
+        c.set_role("coordinator")
+        self.ctx["cfg"] = {}
+        self.assertEqual(c.role_for_chat()["id"], "general")
+
+    def test_withdrawn_permission_requests_leave_the_screen(self):
+        c = self.make()
+        cleared = []
+        c.permission_cleared.connect(lambda: cleared.append(1))
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "X · Write", "detail": "d", "remember": []})
+        c.on_event("agent-1", "permission", {"req": "r2", "tool": "Y", "detail": "d", "remember": []})
+        c.on_event("agent-1", "permission_withdrawn", {"req": "r1"})
+        self.assertEqual(c.current_req["req"], "r2")
+        c.on_event("agent-1", "permission_withdrawn", {"req": "r2"})
+        self.assertIsNone(c.current_req)
+        self.assertTrue(cleared)
 
     def test_first_message_starts_the_general_role_in_the_default_folder(self):
         c = self.make()

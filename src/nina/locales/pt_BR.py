@@ -349,4 +349,5 @@ CATALOG = {
     "Mode:": "Modo:",
     "Levels of delegation:": "Níveis de delegação:",
     "Delegations per message:": "Delegações por mensagem:",
+    "Hand this task to {role} (on {ai}):": "Entregar esta tarefa a {role} (em {ai}):",
 }

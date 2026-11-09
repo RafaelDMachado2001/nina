@@ -242,6 +242,12 @@ class ManagedTab(QWidget):
             return
         self.input.clear()
         self.add_log(self.current, "user", text)
+        ctx = self.context()          # the orchestration settings as they are now (the mode may have changed)
+        a = self.agents[self.current]
+        conn = connections.get(ctx.get("cfg") or {}, claude_accounts(ctx), a.get("connection") or "claude") or {"id": "claude", "kind": "claude", "name": "Claude"}
+        self.runner.orchestration = orchestration.runtime(ctx.get("cfg") or {}, claude_accounts(ctx),
+                                                          roles_mod.load_roles(ctx.get("roles_dir")), ctx.get("account", "") or "",
+                                                          ctx.get("sdk", True), ctx.get("accounts_root"), conn)
         self.agents[self.current]["status"] = "working"
         self.runner.send(self.current, text)
         self.update_item(self.current)
@@ -339,6 +345,8 @@ class ManagedTab(QWidget):
         elif kind == "permission":
             self.queue.append((agent_id, payload))
             self.ask_next()
+        elif kind == "permission_withdrawn":
+            self.queue = [(aid, r) for aid, r in self.queue if r.get("req") != payload.get("req")]
         elif kind == "turn_error":            # an answer failed (quota, key, network...): the agent is still ready
             agent["status"] = "idle"
             self.add_log(agent_id, "error", str(payload))
