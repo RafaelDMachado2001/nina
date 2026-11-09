@@ -279,4 +279,6 @@ CATALOG = {
     "No NINA hooks found.": "Nenhum hook da NINA encontrado.",
     # connections and agents on other AIs
     "Connection '{id}' not found; using {name}.": "Conexão '{id}' não encontrada; usando {name}.",
+    "Blocked by your NINA permissions: {rule}": "Bloqueado pelas suas permissões da NINA: {rule}",
+    "Fetch this web page:": "Buscar esta página da web:",
 }

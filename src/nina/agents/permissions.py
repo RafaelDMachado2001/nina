@@ -1,0 +1,135 @@
+"""The permission gate every agent goes through, whatever AI it runs on. Standard library only.
+
+Order: the user's NINA deny list (`"permissions": {"deny": [...]}` in config.json) -> the role's policy (`tools` are
+pre-approved; writes outside the role's paths are denied without asking) -> auto mode for shell commands -> ask the
+user (Allow / Deny), 10 minutes at most.
+
+Rules use Claude Code's syntax: `Tool`, `Tool(exact)` or `Tool(prefix:*)`. For Bash the parentheses match the
+command; for other tools they are a glob on the file path or URL.
+"""
+import asyncio
+import fnmatch
+import os
+import re
+import uuid
+
+from nina.agents.store import redact
+from nina.i18n import _
+
+WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+PERMISSION_TIMEOUT_S = 600
+_RULE = re.compile(r"^\s*([A-Za-z_][\w-]*)\s*(?:\((.*)\))?\s*$", re.S)
+
+
+def target_path(tool_input: dict) -> str:
+    return str(tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path") or "")
+
+
+def rule_matches(rule: str, tool: str, tool_input: dict) -> bool:
+    m = _RULE.match(str(rule or ""))
+    if not m or m.group(1) != tool:
+        return False
+    spec = m.group(2)
+    if spec is None:
+        return True
+    subject = str(tool_input.get("command", "")) if tool == "Bash" else (target_path(tool_input) or str(tool_input.get("url", "")))
+    subject = subject.strip()
+    if tool == "Bash":
+        if spec.endswith(":*"):
+            prefix = spec[:-2].strip()
+            return subject == prefix or subject.startswith(prefix + " ")
+        return subject == spec.strip()
+    return fnmatch.fnmatch(subject.replace("\\", "/"), spec.strip())
+
+
+def decide(tool: str, tool_input: dict, role: dict, cwd: str, deny=()) -> tuple:
+    """('allow'|'deny'|'ask', reason). A write outside the role's paths is denied without even asking."""
+    for rule in deny or ():
+        if rule_matches(rule, tool, tool_input):
+            return "deny", _("Blocked by your NINA permissions: {rule}", rule=rule)
+    if any(rule_matches(r, tool, tool_input) for r in role.get("tools", [])):
+        return "allow", ""
+    if tool in WRITE_TOOLS:
+        raw = target_path(tool_input)
+        if not raw:
+            return "deny", _("Missing file path.")
+        base = os.path.realpath(cwd)
+        full = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(base, raw))
+        if full != base and not full.startswith(base + os.sep):
+            return "deny", _("Write outside the agent's folder: {path}", path=raw)
+        rel = os.path.relpath(full, base)
+        if not any(fnmatch.fnmatch(rel.replace(os.sep, "/"), pattern) for pattern in role.get("writes", [])):
+            allowed = ", ".join(role.get("writes", [])) or _("none")
+            return "deny", _("This role cannot write to {path} (allowed: {allowed}).", path=rel, allowed=allowed)
+    return "ask", ""
+
+
+def describe(tool: str, tool_input: dict, max_lines: int = 24) -> str:
+    """Short text of what the tool is about to do, for the confirmation dialog."""
+    if tool in ("Write",):
+        content = str(tool_input.get("content", "")).splitlines()
+        head = "\n".join(content[:max_lines]) + (f"\n… (+{len(content) - max_lines} lines)" if len(content) > max_lines else "")
+        text = _("Create/overwrite {path}:", path=target_path(tool_input)) + f"\n\n{head}"
+    elif tool in ("Edit", "MultiEdit"):
+        text = (_("Edit {path}:", path=target_path(tool_input)) + f"\n\n- {str(tool_input.get('old_string', ''))[:600]}\n"
+                f"+ {str(tool_input.get('new_string', ''))[:600]}")
+    elif tool == "Bash":
+        text = _("Run in the shell:") + f"\n\n{tool_input.get('command', '')}"
+    elif tool == "WebFetch":
+        text = _("Fetch this web page:") + f"\n\n{tool_input.get('url', '')}"
+    else:
+        text = "\n".join(f"{k}: {str(v)[:300]}" for k, v in list(tool_input.items())[:6]) or _("(no parameters)")
+    return redact(text)[:3000]
+
+
+class Gate:
+    """Lives on the agents' asyncio loop. `emit(agent_id, kind, payload)` reports `denied` and `permission` events;
+    `resolve()` (called on the loop) answers a permission request."""
+
+    def __init__(self, loop, emit, auto_getter, deny_getter):
+        self.loop, self.emit = loop, emit
+        self.auto_getter, self.deny_getter = auto_getter, deny_getter
+        self.pending = {}            # req_id -> Future[(allow, message, always)]
+        self.remember = {}           # req_id -> the auto mode steps "Allow always" would save
+
+    async def check(self, agent_id: str, role: dict, cwd: str, tool: str, tool_input: dict, pending: set) -> tuple:
+        """(allowed, message). `pending` is the agent's own set of open request ids (so closing it can deny them)."""
+        verdict, why = decide(tool, tool_input, role, cwd, self.deny_getter() or ())
+        if verdict == "allow":
+            return True, ""
+        if verdict == "deny":
+            self.emit(agent_id, "denied", {"tool": tool, "why": why})
+            return False, why
+        auto = self.auto_getter()
+        steps = []
+        if tool == "Bash" and auto is not None and auto.enabled():
+            steps = auto.pending(str(tool_input.get("command", "")))
+            if not steps:
+                return True, ""          # auto mode: it only reads, or you already allowed it always
+        req = uuid.uuid4().hex
+        fut = self.loop.create_future()
+        self.pending[req] = fut
+        pending.add(req)
+        offer = steps if steps and not any(s.hard for s in steps) else []
+        if offer:
+            self.remember[req] = offer
+        self.emit(agent_id, "permission", {"req": req, "tool": tool, "detail": describe(tool, tool_input),
+                                           "remember": [s.label for s in offer]})
+        try:
+            allow, message, always = await asyncio.wait_for(fut, PERMISSION_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            allow, message, always = False, _("No answer from the user in time."), False
+        finally:
+            self.pending.pop(req, None)
+            pending.discard(req)
+        remembered = self.remember.pop(req, [])
+        if allow:
+            if always and remembered and auto is not None:
+                auto.rules.add(remembered)
+            return True, ""
+        return False, message or _("Denied by the user.")
+
+    def resolve(self, req_id: str, allow: bool, message: str = "", always: bool = False) -> None:
+        fut = self.pending.get(req_id)
+        if fut is not None and not fut.done():
+            fut.set_result((allow, message, always))
