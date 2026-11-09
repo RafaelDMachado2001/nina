@@ -1,6 +1,4 @@
 import os
-import time
-import unittest
 
 from tests.support import IsolatedHome  # noqa: F401
 

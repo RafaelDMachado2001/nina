@@ -1,6 +1,5 @@
 import unittest
 from datetime import datetime
-from pathlib import Path
 
 from tests.support import IsolatedHome  # noqa: F401
 
