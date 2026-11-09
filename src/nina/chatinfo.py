@@ -184,7 +184,7 @@ def details(folder: str, branch: str | None, account: str, info: dict, rate: dic
     rows = [(_("Folder"), folder or "-")]
     if branch:
         rows.append((_("Branch"), branch))
-    rows += [(_("Date"), d), (_("Time"), t), (_("Account"), account or _("default"))]
+    rows += [(_("Date"), d), (_("Time"), t), (_("AI"), account or _("default"))]
     if info.get("model"):
         rows.append((_("Model"), f"{friendly_model(info['model'])} ({info['model']})"))
     if info.get("ctx_max"):

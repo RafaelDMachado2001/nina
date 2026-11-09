@@ -28,24 +28,38 @@ class NewAgentDialogTest(IsolatedHome):
         self.assertIn("none (read-only)", d.description.text())
 
     def test_preselects_the_active_account(self):
-        self.assertEqual(self.make().account.currentData(), "work")
-        self.assertEqual(self.make(accounts=[], account="").account.currentData(), "")
+        self.assertEqual(self.make().connection.currentData(), "claude:work")
+        self.assertEqual(self.make(accounts=[], account="").connection.currentData(), "claude")
+
+    def test_lists_claude_accounts_and_custom_connections_and_follows_the_role_binding(self):
+        cfg = {"connections": [LOCAL], "role_connections": {"writing-reviewer": "local"}}
+        d = self.make(cfg=cfg)
+        ids = [d.connection.itemData(i) for i in range(d.connection.count())]
+        self.assertEqual(ids, ["claude", "claude:personal", "claude:work", "local"])
+        d.role.setCurrentIndex(d.role.findData("writing-reviewer"))
+        self.assertEqual(d.connection.currentData(), "local")
+        d.role.setCurrentIndex(d.role.findData("architect"))
+        self.assertEqual(d.connection.currentData(), "claude:work")
 
     def test_values(self):
         d = self.make()
         d.role.setCurrentIndex(d.role.findData("architect"))
         d.prompt.setPlainText("  Compare two queue designs  ")
         v = d.values()
-        self.assertEqual((v["role"]["id"], v["cwd"], v["account"], v["prompt"]),
-                         ("architect", str(self.home), "work", "Compare two queue designs"))
+        self.assertEqual((v["role"]["id"], v["cwd"], v["connection"], v["prompt"]),
+                         ("architect", str(self.home), "claude:work", "Compare two queue designs"))
+
+
+LOCAL = {"id": "local", "kind": "openai", "name": "Local AI", "base_url": "http://localhost:11434/v1", "model": "qwen"}
 
 
 class FakeRunner:
     def __init__(self):
         self.started = []
 
-    def start(self, role, cwd, prompt, account="", config_dir=None, resume=None):
-        self.started.append({"role": role["id"], "cwd": cwd, "prompt": prompt, "resume": resume})
+    def start(self, role, cwd, prompt, account="", config_dir=None, resume=None, connection=None, model=""):
+        self.started.append({"role": role["id"], "cwd": cwd, "prompt": prompt, "resume": resume,
+                             "connection": (connection or {}).get("id"), "model": model})
         return "live-1"
 
     def shutdown(self):
@@ -53,10 +67,10 @@ class FakeRunner:
 
 
 class ManagedTabPersistenceTest(IsolatedHome):
-    def make(self):
+    def make(self, cfg=None):
         self.store = self.home / "managed.json"
         ctx = {"accounts": [], "account": "", "accounts_root": str(self.accounts), "default_dir": str(self.home),
-               "roles_dir": None, "claude_bin": ""}
+               "roles_dir": None, "claude_bin": "", "cfg": cfg or {}}
         tab = ManagedTab(lambda: ctx, store_path=self.store)
         self.addCleanup(tab.close)
         tab.runner.shutdown()
@@ -86,7 +100,8 @@ class ManagedTabPersistenceTest(IsolatedHome):
         tab = self.make()
         tab.listing.setCurrentRow(0)
         tab.resume_agent()
-        self.assertEqual(tab.runner.started, [{"role": "general", "cwd": str(self.home), "prompt": None, "resume": "sess-1"}])
+        self.assertEqual(tab.runner.started, [{"role": "general", "cwd": str(self.home), "prompt": None, "resume": "sess-1",
+                                               "connection": "claude", "model": ""}])
         self.assertEqual(tab.listing.count(), 1)
         self.assertEqual(tab.current, "live-1")
         self.assertEqual(tab.agents["live-1"]["status"], "starting")
@@ -108,6 +123,35 @@ class ManagedTabPersistenceTest(IsolatedHome):
                            "item": __import__("PySide6.QtWidgets", fromlist=["x"]).QListWidgetItem()}
         tab.on_event("x", "session", "sess-7")
         self.assertEqual([a["session"] for a in managed_store.load(self.store)], ["sess-7"])
+
+
+    def test_an_agent_on_another_connection_resumes_on_it(self):
+        self.seed(connection="local")
+        tab = self.make(cfg={"connections": [LOCAL]})
+        tab.listing.setCurrentRow(0)
+        tab.resume_agent()
+        self.assertEqual((tab.runner.started[0]["connection"], tab.runner.started[0]["model"]), ("local", "qwen"))
+
+    def test_an_agent_whose_connection_is_gone_starts_a_new_session(self):
+        self.seed(connection="deleted")
+        tab = self.make(cfg={"connections": [LOCAL]})
+        tab.listing.setCurrentRow(0)
+        tab.resume_agent()
+        self.assertEqual((tab.runner.started[0]["connection"], tab.runner.started[0]["resume"]), ("claude", None))
+        self.assertTrue(any(k == "info" and "deleted" in t for k, t in tab.agents[tab.current]["log"]))
+
+    def test_turn_errors_keep_the_agent_ready_and_hooks_are_forwarded(self):
+        tab = self.make()
+        got = []
+        tab.hook_event.connect(got.append)
+        tab.agents["x"] = {"role": roles.load_roles()["general"], "cwd": str(self.home), "account": "",
+                           "connection": "claude", "status": "working", "log": [], "session": None, "cost": 0.0,
+                           "item": __import__("PySide6.QtWidgets", fromlist=["x"]).QListWidgetItem()}
+        tab.on_event("x", "turn_error", "Quota reached")
+        self.assertEqual(tab.agents["x"]["status"], "idle")
+        self.assertEqual(tab.agents["x"]["log"][-1], ("error", "Quota reached"))
+        tab.on_event("x", "hook", {"ev": "Stop", "sid": "s"})
+        self.assertEqual(got, [{"ev": "Stop", "sid": "s"}])
 
 
 if __name__ == "__main__":

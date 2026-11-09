@@ -61,6 +61,11 @@ class UsageTest(IsolatedHome):
         rows = dict(chatinfo.details("~/nina", "main", "work", self.INFO, None, {"cost": 1.5, "tokens": 9000}, self.NOW))
         self.assertIn("pay as you go", rows["Usage"])
         self.assertIn("$1.50", rows["Today (NINA)"])
+        self.assertEqual(rows["AI"], "work")                                          # the connection in use
+
+    def test_models_of_other_ais_are_shown_as_they_come(self):
+        self.assertEqual(chatinfo.friendly_model("gemini-3.5-flash-lite"), "gemini-3.5-flash-lite")
+        self.assertEqual(chatinfo.friendly_model("qwen3:8b"), "qwen3:8b")
 
     def test_narrow_windows_drop_the_least_important_items_first(self):
         self.assertEqual(self.texts(1, self.SESSION)[-1], "session 14%")             # clock gone

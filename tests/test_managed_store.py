@@ -14,12 +14,17 @@ class ManagedStoreTest(unittest.TestCase):
         self.path = Path(self.tmp.name) / "state" / "managed.json"
 
     def agent(self, **kw):
-        return {"role": "general", "cwd": "/work", "account": "a", "session": "s1", "cost": 0.5,
+        return {"role": "general", "cwd": "/work", "account": "a", "connection": "claude:a", "session": "s1", "cost": 0.5,
                 "log": [("user", "hi"), ("assistant", "hello")], **kw}
 
     def test_round_trip(self):
         managed_store.save([self.agent()], self.path)
         self.assertEqual(managed_store.load(self.path), [self.agent()])
+
+    def test_agents_saved_before_connections_get_their_claude_account(self):
+        old = {k: v for k, v in self.agent().items() if k != "connection"}
+        managed_store.save([old, {**old, "account": ""}], self.path)
+        self.assertEqual([a["connection"] for a in managed_store.load(self.path)], ["claude:a", "claude"])
 
     def test_file_is_private(self):
         managed_store.save([self.agent()], self.path)

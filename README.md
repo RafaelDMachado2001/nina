@@ -15,7 +15,8 @@ Click her to open [Claude Code](https://docs.claude.com/en/docs/claude-code) in 
 - **Reacts to what Claude is doing** (through Claude Code hooks): a focused look and a spinning shuriken while it works, a short bubble with the current activity ("Editing...", "Running a command..."), wide eyes with a pinned bubble when it needs your permission, and a celebration when it is done. With several sessions open, waiting beats working beats idle.
 - **Agents panel**: every Claude Code session and subagent as a tree, with its state, last action, timeline and conversation.
 - **Agent graph**: an Obsidian-style live graph of sessions, subagents, tools, MCP servers and files, with pulses showing the data flow as events happen, and a timeline **replay**.
-- **Managed agents** (optional): launch Claude agents by *role*, chat with them, interrupt them, resume them after a restart, and approve every risky action in a dialog. Includes an **agent builder** that interviews you and writes project subagents and skills, one approved file at a time.
+- **Agents on any AI**: each role (developer, writing reviewer...) can run on Claude or on any OpenAI-compatible API (OpenAI, Gemini, Ollama, OpenRouter...), with the same tools and the same safety.
+- **Managed agents** (optional): launch agents by *role*, chat with them, interrupt them, resume them after a restart, and approve every risky action in a dialog. Includes an **agent builder** that interviews you and writes project subagents and skills, one approved file at a time.
 - **Plugins**: small local Python files can add alerts and menu items (see below).
 - English UI with a complete Brazilian Portuguese translation (`"language": "pt-BR"`); new languages are a single catalog file.
 
@@ -154,6 +155,44 @@ For a **global shortcut** on GNOME (or on Windows, see above) run `nina --instal
 `nina --uninstall-shortcut` removes it). It registers a custom keybinding that runs `nina open`: it opens or closes the chat, and **starts NINA first when she is closed** (through her `nina.service` if there is one, otherwise as a new process); the desktop grabs the keys, so it also works on Wayland.
 If NINA runs as root inside your session (a system service), starting her asks for your password through `pkexec`, and an open NINA is reached through a restricted socket in `/run/user/<uid>/` that only you can use and that only understands `chat` and `show`.
 
+### Other AIs: connections and agents
+
+Every agent and every chat can run on **any AI that speaks the OpenAI Chat Completions API**, not only on Claude: OpenAI,
+Google Gemini, local models through Ollama or LM Studio, OpenRouter, Groq, a company server... For example: the developer
+agent on Claude Code and the writing reviewer on Gemini.
+
+Right click → **Connections and agents...** (also at the bottom of the chat's AI chip):
+
+- **Connections**: your Claude accounts are listed automatically. **Add...** a connection from a preset (it fills in the
+  address) or a custom one: name, base URL, model (**Fetch models** asks the server), and where the API key lives: the
+  **system keyring** (Windows Credential Manager, macOS Keychain, Linux Secret Service) or an **environment variable**
+  (`GEMINI_API_KEY`...). Local servers need no key. Keys are never written to `config.json`. **Test** sends a one-word
+  request. Optional: the context window (to show how full it is) and prices in US$ per million tokens (to show the cost).
+- **Agents**: pick the AI (and, optionally, a model) of each role. A chat or a new agent can still pick another one.
+  The default connection is the Claude account chosen in the menu unless you set another one.
+
+An agent on another AI has the **same tools and the same safety as a Claude agent**: it reads, searches, creates and edits
+files, runs commands and fetches web pages, through NINA's own tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`,
+`WebFetch`), and every action goes through the same rules: the role's pre-approved tools, writes only in the role's paths,
+**Allow / Deny** for the rest, auto mode and "Allow always". Its conversation is kept by NINA and resumes after a restart.
+It shows up in the agents panel and graph, and the mascot reacts to it like to any agent.
+
+Good to know:
+
+- The result depends on the model. Small local models often misuse tools: read the Allow / Deny sheet before allowing an edit.
+- `Bash` needs a bash shell; on Windows that is Git for Windows (Claude Code needs it too). Without it the tool is not offered.
+- Claude Code's own `settings.json` permission rules only apply to Claude agents. To block something for every agent, use
+  NINA's deny list in `config.json`: `"permissions": {"deny": ["Bash(rm -rf:*)", "Read(**/.env)", "WebFetch"]}` (Claude Code's
+  rule syntax). It is checked before anything else, also passed to Claude Code, and it matches every part of a command
+  (`cd x && rm -rf /`, `sudo rm -rf /`) and every spelling of a path (`./.env`, `~/...`, absolute). It is a safety net, not a
+  sandbox: a command can still reach the same effect another way, so keep reading what you allow.
+- Pre-approved tools in a role (`tools: Read, Bash(git log:*)`) only cover a single plain command: chained, substituted or
+  redirected commands always ask. A role's `permission_mode` only applies to Claude; other AIs always ask.
+- Shell commands of agents on other AIs never see the API keys of your connections that live in environment variables.
+- Free tiers have quotas. When one runs out, the chat shows the provider's message and the agent stays ready; NINA never
+  switches to another AI by itself.
+- From a terminal: `nina --connections` lists them (never the keys) and `nina --test-connection <id>` tests one.
+
 ### Accounts and profiles
 
 NINA understands the common multi-account layout (one Claude config directory per account in `~/.claude/accounts/<account>`) and sets
@@ -191,6 +230,11 @@ A broken plugin never takes NINA down. Plugins run as you, so only put code you 
 | `chat_role` | Role of the chat agent (default: the General assistant) |
 | `chat_theme` | `dark` (default) or `light`; also switchable from the chat window's menu |
 | `plugins` | `false` disables local plugins |
+| `connections` | Connections to OpenAI-compatible APIs (managed in **Connections and agents...**; never holds keys) |
+| `default_connection` | Id of the default connection; empty = the Claude account chosen in the menu |
+| `role_connections` | Role id → connection id, or `{"connection": id, "model": name}` |
+| `permissions` | `{"deny": [rules]}`: actions blocked for every agent, e.g. `"Bash(rm -rf:*)"` |
+| `max_tool_steps` | Tool calls per answer for agents on other AIs (default 40) |
 
 Start with the system: right click → **Start with the system** (a freedesktop autostart entry).
 

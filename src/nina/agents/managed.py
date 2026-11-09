@@ -9,23 +9,22 @@ role's paths) and, unless denied or allowed outright, becomes a confirmation req
 Outgoing events are length-limited and go through `redact`.
 """
 import asyncio
-import fnmatch
 import os
 import shutil
 import threading
 import uuid
 from pathlib import Path
 
+from nina.agents.permissions import WRITE_TOOLS, Gate, decide, describe
 from nina.agents.store import clip, redact
 from nina.i18n import _
+
+__all__ = ["Runner", "available", "can_run", "decide", "describe", "find_claude_bin", "has_content", "query_arg", "tool_summary"]
 
 try:
     import claude_agent_sdk as sdk
 except Exception:   # the SDK is optional: without it, managed agents are unavailable
     sdk = None
-
-WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
-PERMISSION_TIMEOUT_S = 600
 
 
 def has_content(message) -> bool:
@@ -58,52 +57,19 @@ def available() -> bool:
     return sdk is not None
 
 
+def can_run(connection: dict | None) -> bool:
+    """Whether an agent on this connection can start here (Claude needs the optional SDK)."""
+    if connection is not None and connection.get("kind") == "openai":
+        return True
+    return sdk is not None
+
+
 def find_claude_bin(configured: str = "") -> str | None:
     """Use the claude that is already installed (same version you use in the terminal). None = the binary bundled with the SDK."""
     for candidate in (configured, shutil.which("claude") or "", str(Path.home() / ".local" / "bin" / "claude")):
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
     return None
-
-
-# ---- permission policy (pure, testable) -------------------------------------------------------
-def _target_path(tool_input: dict) -> str:
-    return str(tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path") or "")
-
-
-def decide(tool: str, tool_input: dict, role: dict, cwd: str) -> tuple:
-    """('allow'|'deny'|'ask', reason). A write outside the role's paths is denied without even asking."""
-    if tool in role.get("tools", []):
-        return "allow", ""
-    if tool in WRITE_TOOLS:
-        raw = _target_path(tool_input)
-        if not raw:
-            return "deny", _("Missing file path.")
-        base = os.path.realpath(cwd)
-        full = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(base, raw))
-        if full != base and not full.startswith(base + os.sep):
-            return "deny", _("Write outside the agent's folder: {path}", path=raw)
-        rel = os.path.relpath(full, base)
-        if not any(fnmatch.fnmatch(rel, pattern) for pattern in role.get("writes", [])):
-            allowed = ", ".join(role.get("writes", [])) or _("none")
-            return "deny", _("This role cannot write to {path} (allowed: {allowed}).", path=rel, allowed=allowed)
-    return "ask", ""
-
-
-def describe(tool: str, tool_input: dict, max_lines: int = 24) -> str:
-    """Short text of what the tool is about to do, for the confirmation dialog."""
-    if tool in ("Write",):
-        content = str(tool_input.get("content", "")).splitlines()
-        head = "\n".join(content[:max_lines]) + (f"\n… (+{len(content) - max_lines} lines)" if len(content) > max_lines else "")
-        text = _("Create/overwrite {path}:", path=_target_path(tool_input)) + f"\n\n{head}"
-    elif tool in ("Edit", "MultiEdit"):
-        text = (_("Edit {path}:", path=_target_path(tool_input)) + f"\n\n- {str(tool_input.get('old_string', ''))[:600]}\n"
-                f"+ {str(tool_input.get('new_string', ''))[:600]}")
-    elif tool == "Bash":
-        text = _("Run in the shell:") + f"\n\n{tool_input.get('command', '')}"
-    else:
-        text = "\n".join(f"{k}: {str(v)[:300]}" for k, v in list(tool_input.items())[:6]) or _("(no parameters)")
-    return redact(text)[:3000]
 
 
 def tool_summary(tool_input: dict) -> str:
@@ -114,8 +80,10 @@ def tool_summary(tool_input: dict) -> str:
 
 
 class _Agent:
-    def __init__(self, agent_id: str, role: dict, cwd: str, account: str, config_dir: str | None):
+    def __init__(self, agent_id: str, role: dict, cwd: str, account: str, config_dir: str | None,
+                 connection: dict | None = None, model: str = ""):
         self.id, self.role, self.cwd, self.account, self.config_dir = agent_id, role, cwd, account, config_dir
+        self.connection, self.model = connection, model
         self.session_id = None
         self.queue = None            # asyncio.Queue, created inside the loop
         self.client = None
@@ -129,10 +97,12 @@ class Runner:
         self.claude_bin = claude_bin
         self.factory = client_factory or (lambda options: sdk.ClaudeSDKClient(options))
         self.agents = {}
-        self.pending = {}            # req_id -> asyncio.Future
-        self.remember = {}           # req_id -> the auto mode steps "Allow always" would save
         self.auto = None             # an autoapprove.AutoMode: read-only Bash runs without asking while it is on
+        self.deny = []               # the user's NINA deny list (rules), checked first for every agent
+        self.max_steps = 40          # tool calls per answer for agents on OpenAI-compatible connections
+        self.connections = []        # the user's connections: their env-var keys are hidden from shell commands
         self.loop = asyncio.new_event_loop()
+        self.gate = Gate(self.loop, self._emit, lambda: self.auto, lambda: self.deny)
         self.thread = threading.Thread(target=self._main, name="nina-managed", daemon=True)
         self.thread.start()
 
@@ -145,10 +115,11 @@ class Runner:
 
     # ---- API (called from the UI thread) ---------------------------------------------------------
     def start(self, role: dict, cwd: str, prompt: str | None, account: str = "", config_dir: str | None = None,
-              resume: str | None = None) -> str:
-        """Start an agent. With `resume` (a Claude session id) the conversation continues where it stopped;
-        `prompt` may then be None to wait for the user's next message."""
-        agent = _Agent(uuid.uuid4().hex[:12], role, str(cwd), account, config_dir)
+              resume: str | None = None, connection: dict | None = None, model: str = "") -> str:
+        """Start an agent. With `resume` (a session id) the conversation continues where it stopped; `prompt` may
+        then be None to wait for the user's next message. `connection` (see nina.connections) picks the AI: None or a
+        "claude" connection runs Claude through the SDK, an "openai" one runs NINA's own tool loop."""
+        agent = _Agent(uuid.uuid4().hex[:12], role, str(cwd), account, config_dir, connection, model)
         agent.session_id = resume
         self.agents[agent.id] = agent
         self._submit(self._launch(agent, prompt))
@@ -202,9 +173,10 @@ class Runner:
             self.loop.call_later(5, agent.task.cancel)    # force-stop if it does not exit by itself
 
     def _resolve(self, req_id: str, allow: bool, message: str, always: bool = False) -> None:
-        fut = self.pending.get(req_id)
-        if fut is not None and not fut.done():
-            fut.set_result((allow, message, always))
+        self.gate.resolve(req_id, allow, message, always)
+
+    def _emit(self, agent_id: str, kind: str, payload) -> None:
+        self.emit(agent_id, kind, payload)
 
     async def _interrupt(self, agent: _Agent) -> None:
         if agent.client is not None:
@@ -228,15 +200,25 @@ class Runner:
         )
         if agent.session_id:
             kwargs["resume"] = agent.session_id
-        if role.get("model"):
-            kwargs["model"] = role["model"]
+        if agent.model or role.get("model"):
+            kwargs["model"] = agent.model or role["model"]
         if self.claude_bin:
             kwargs["cli_path"] = self.claude_bin
+        disallowed = list(self.deny)                           # NINA's deny list, also where can_use_tool is skipped
         if not role.get("writes"):
-            kwargs["disallowed_tools"] = sorted(WRITE_TOOLS)     # read-only role: it never even gets to ask
+            disallowed += sorted(WRITE_TOOLS)                  # read-only role: it never even gets to ask
+        if disallowed:
+            kwargs["disallowed_tools"] = disallowed
         return sdk.ClaudeAgentOptions(**kwargs)
 
     async def _launch(self, agent: _Agent, prompt: str) -> None:
+        if agent.connection is not None and agent.connection.get("kind") == "openai":
+            from nina.agents.openai_agent import OpenAIAgent
+            hide = {c["key"]["name"] for c in self.connections
+                    if isinstance(c.get("key"), dict) and c["key"].get("source") == "env" and c["key"].get("name")}
+            await OpenAIAgent(agent, agent.connection, agent.model, self.gate, self._emit, self.max_steps,
+                              hide).run(prompt)
+            return
         agent.queue = asyncio.Queue()
         agent.task = asyncio.current_task()
         try:
@@ -306,36 +288,7 @@ class Runner:
                 "errors": list(getattr(msg, "errors", None) or [])})
 
     async def _can_use_tool(self, agent: _Agent, tool: str, tool_input: dict):
-        verdict, why = decide(tool, tool_input, agent.role, agent.cwd)
-        if verdict == "allow":
+        allowed, message = await self.gate.check(agent.id, agent.role, agent.cwd, tool, tool_input, agent.pending)
+        if allowed:
             return sdk.PermissionResultAllow()
-        if verdict == "deny":
-            self.emit(agent.id, "denied", {"tool": tool, "why": why})
-            return sdk.PermissionResultDeny(message=why)
-        steps = []
-        if tool == "Bash" and self.auto is not None and self.auto.enabled():
-            steps = self.auto.pending(str(tool_input.get("command", "")))
-            if not steps:
-                return sdk.PermissionResultAllow()      # auto mode: it only reads, or you already allowed it always
-        req = uuid.uuid4().hex
-        fut = self.loop.create_future()
-        self.pending[req] = fut
-        agent.pending.add(req)
-        offer = steps if steps and not any(s.hard for s in steps) else []
-        if offer:
-            self.remember[req] = offer
-        self.emit(agent.id, "permission", {"req": req, "tool": tool, "detail": describe(tool, tool_input),
-                                           "remember": [s.label for s in offer]})
-        try:
-            allow, message, always = await asyncio.wait_for(fut, PERMISSION_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            allow, message, always = False, _("No answer from the user in time."), False
-        finally:
-            self.pending.pop(req, None)
-            agent.pending.discard(req)
-        remembered = self.remember.pop(req, [])
-        if allow:
-            if always and remembered and self.auto is not None:
-                self.auto.rules.add(remembered)
-            return sdk.PermissionResultAllow()
-        return sdk.PermissionResultDeny(message=message or _("Denied by the user."))
+        return sdk.PermissionResultDeny(message=message)

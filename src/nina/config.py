@@ -25,6 +25,12 @@ DEFAULTS = {
     # Per-account profile (optional): default_dir, add_dirs, context_file, permissions_file.
     "profiles": {},
     "claude_bin": "",        # path of the `claude` binary for managed agents; empty = auto-detect
+    # Other AIs (OpenAI-compatible APIs): see nina.connections. Keys are never stored here (nina.secrets).
+    "connections": [],
+    "default_connection": "",   # empty = follow the active Claude account
+    "role_connections": {},     # role id -> connection id, or {"connection": id, "model": name}
+    "permissions": {"deny": []},  # rules every agent obeys first, e.g. "Bash(rm -rf:*)", "WebFetch"
+    "max_tool_steps": 40,       # tool calls per answer for agents on OpenAI-compatible connections
 }
 
 

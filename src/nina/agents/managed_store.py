@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 
+from nina import connections
+
 MAX_AGENTS = 30
 MAX_LOG = 200
 
@@ -34,7 +36,9 @@ def load(path: Path | None = None) -> list:
     out = []
     for a in items or []:
         if isinstance(a, dict) and a.get("role") and a.get("session") and a.get("cwd"):
-            out.append({"role": str(a["role"]), "cwd": str(a["cwd"]), "account": str(a.get("account") or ""),
+            account = str(a.get("account") or "")
+            connection = str(a.get("connection") or "") or connections.account_to_connection(account) or "claude"
+            out.append({"role": str(a["role"]), "cwd": str(a["cwd"]), "account": account, "connection": connection,
                         "session": str(a["session"]), "cost": float(a.get("cost") or 0.0),
                         "log": _clean_log(a.get("log"))})
     return out[-MAX_AGENTS:]

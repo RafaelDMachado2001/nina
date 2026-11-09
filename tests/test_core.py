@@ -288,10 +288,10 @@ class HookScriptTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             for payload in ('{"hook_event_name":"Stop","session_id":"s"}', "not json", "", "[]", '{"hook_event_name":'):
-                t0 = time.time()
+                t0 = time.monotonic()
                 r = self.run_hook(payload, d)                      # no NINA listening
                 self.assertEqual((r.returncode, r.stdout), (0, ""), payload)
-                self.assertLess(time.time() - t0, 2.0)
+                self.assertLess(time.monotonic() - t0, 2.0)
 
 
 class MascotStateTest(IsolatedHome):
@@ -546,3 +546,99 @@ class ExportTest(IsolatedHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConnectionsWiringTest(IsolatedHome):
+    LOCAL = {"id": "local", "kind": "openai", "name": "Local AI", "base_url": "http://localhost:11434/v1", "model": "qwen"}
+
+    def test_the_chat_is_available_with_only_a_custom_connection(self):
+        from nina import widget
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        with mock.patch.object(widget.managed, "available", return_value=False):
+            self.assertFalse(n.managed_available())
+            n.cfg["connections"] = [self.LOCAL]
+            self.assertTrue(n.managed_available())
+            ctx = n.managed_context()
+            self.assertEqual((ctx["sdk"], ctx["cfg"]["connections"][0]["id"]), (False, "local"))
+
+    def test_the_chat_opens_without_the_sdk_when_another_ai_is_configured(self):
+        from nina import widget
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        n.cfg["connections"] = [self.LOCAL]
+        with mock.patch.object(widget.managed, "available", return_value=False),                 mock.patch.object(widget.QMessageBox, "information", side_effect=AssertionError("modal shown")):
+            self.assertTrue(n.ensure_chat())
+            self.assertEqual(n.chat_controller.resolved()[0]["id"], "local")   # no Claude here: the other AI
+
+    def test_agents_nina_runs_itself_reach_the_agents_panel(self):
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        if n.agents is None:
+            self.skipTest("agents store unavailable")
+        ctrl = n.make_chat_controller("t1")
+        ctrl.hook_event.emit({"ev": "UserPromptSubmit", "sid": "nina-s1", "prompt": "hello", "cwd": str(self.home)})
+        self.assertIsNotNone(n.agents.get("nina-s1"))
+
+
+class ConnectionsCliTest(IsolatedHome):
+    def run_cli(self, *args):
+        import contextlib
+        import io
+
+        from nina import app as nina_app
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = nina_app.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_list_shows_connections_without_secrets(self):
+        self.write_config({"connections": [{"id": "gem", "kind": "openai", "name": "Gemini", "model": "g-1",
+                                            "base_url": "https://x/v1", "key": {"source": "env", "name": "SECRET_VAR"}}]})
+        with mock.patch.dict(os.environ, {"SECRET_VAR": "sk-very-secret"}):
+            code, out, _err = self.run_cli("--connections")
+        self.assertEqual(code, 0)
+        self.assertIn("claude", out)
+        self.assertIn("gem", out)
+        self.assertIn("g-1", out)
+        self.assertNotIn("sk-very-secret", out)
+
+    def test_test_connection(self):
+        from tests.fake_openai import FakeOpenAI, reply
+        api = FakeOpenAI()
+        self.addCleanup(api.close)
+        self.write_config({"connections": [{"id": "loc", "kind": "openai", "name": "Local", "model": "m",
+                                            "base_url": api.base_url}]})
+        api.script.append(reply("OK"))
+        code, out, _err = self.run_cli("--test-connection", "loc")
+        self.assertEqual(code, 0)
+        self.assertIn("OK", out)
+        api.script.append((401, {"error": {"message": "bad key"}}, {}))
+        code, _out, err = self.run_cli("--test-connection", "loc")
+        self.assertEqual(code, 1)
+        self.assertIn("bad key", err)
+        code, _out, err = self.run_cli("--test-connection", "nope")
+        self.assertEqual(code, 1)
+
+    def test_the_menu_opens_the_connections_window(self):
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        texts = [a.text() for a in n.build_menu().actions()]
+        self.assertIn("Connections and agents...", texts)
+        n.save_connections({"connections": [], "default_connection": "", "role_connections": {"general": "claude"}})
+        self.assertEqual(config.load_config()["role_connections"], {"general": "claude"})
+
+    def test_old_sessions_nobody_refers_to_are_pruned(self):
+        from nina import chathistory
+        from nina.agents import sessions
+        old, kept = sessions.new_id(), sessions.new_id()
+        sessions.save(old, [])
+        sessions.save(kept, [])
+        for sid in (old, kept):
+            os.utime(sessions.path_of(sid), (time.time() - 200 * 86400,) * 2)
+        chathistory.save({"id": "abc1", "title": "t", "session": kept, "entries": [["user", "hi"]]})
+        n = Nina()
+        self.addCleanup(lambda: (n.shutdown(), n.close()))
+        n.prune_sessions()
+        self.assertIsNone(sessions.load(old))
+        self.assertEqual(sessions.load(kept), [])

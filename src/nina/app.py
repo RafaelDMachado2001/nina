@@ -23,6 +23,9 @@ Usage:
                              global shortcut that runs `nina open` (GNOME: default <Super><Shift>n;
                              Windows: a Start Menu shortcut, default Ctrl+Alt+N)
   nina --uninstall-shortcut  remove that shortcut
+  nina --connections         list the AIs NINA can use (Claude accounts and the connections you added)
+  nina --test-connection <id>
+                             send a one-word request through that connection
   nina --install-hooks       connect NINA to Claude Code (merges hooks into settings.json)
   nina --uninstall-hooks     remove NINA's hooks
   nina --export [dir]        write the icon and a sheet with every frame
@@ -160,6 +163,43 @@ def run_server(app) -> int:
     return app.exec()
 
 
+def list_connections(cfg: dict) -> int:
+    """`nina --connections`: every connection, never a key."""
+    from nina import connections
+    default = cfg.get("default_connection") or ""
+    for c in connections.all_connections(cfg, config.list_accounts()):
+        mark = "*" if c["id"] == default else " "
+        if c["kind"] == "claude":
+            print(f"{mark} {c['id']:<24} claude   {c['name']}")
+        else:
+            key = c["key"]
+            where = {"keyring": "key: keyring", "env": f"key: ${key.get('name', '')}", "none": "no key"}.get(key.get("source"), "")
+            print(f"{mark} {c['id']:<24} openai   {c['name']} · {c['model']} · {c['base_url']} · {where}")
+    if not default:
+        print(_("Default: the Claude account chosen in NINA's menu."))
+    return 0
+
+
+def test_connection(cfg: dict, conn_id: str) -> int:
+    """`nina --test-connection <id>`: send a one-word request and print the answer or the error."""
+    from nina import connections, secrets
+    from nina.agents import openai_client
+    conn = connections.get(cfg, config.list_accounts(), conn_id)
+    if conn is None or conn["kind"] != "openai":
+        print(_("Unknown connection: {id}. See: nina --connections", id=conn_id), file=sys.stderr)
+        return 1
+    try:
+        data = openai_client.chat(conn["base_url"], secrets.get_key(conn), conn["model"],
+                                  [{"role": "user", "content": "Reply with the word OK."}], [],
+                                  min(float(conn["timeout_s"]), 120), conn["headers"])
+    except openai_client.ApiError as e:
+        print(openai_client.friendly(e), file=sys.stderr)
+        return 1
+    text = str((data.get("choices") or [{}])[0].get("message", {}).get("content") or "").strip()
+    print(_("It works. {model} answered: {text}", model=conn["model"], text=text[:200] or "…"))
+    return 0
+
+
 def main(argv: list | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     cfg = config.load_config()
@@ -182,6 +222,11 @@ def main(argv: list | None = None) -> int:
             print(f"NINA: could not change {config.settings_path()}: {e}", file=sys.stderr)
             return 1
         return 0
+
+    if args == ["--connections"]:
+        return list_connections(cfg)
+    if args and args[0] == "--test-connection":
+        return test_connection(cfg, args[1] if len(args) > 1 else "")
 
     if args and args[0] in ("--install-shortcut", "--uninstall-shortcut"):
         from nina import shortcut

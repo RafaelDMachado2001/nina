@@ -10,7 +10,7 @@ from PySide6.QtCore import QPoint, QPointF, QProcess, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QWidget
 
-from nina import autoapprove, claude_hooks, config, launcher, plugins
+from nina import autoapprove, claude_hooks, config, connections, launcher, plugins
 from nina.config import APP_NAME
 from nina.i18n import N_, _
 from nina.sprites import FRAMES, GRID_H, GRID_W, PALETTE, render_frame
@@ -478,6 +478,8 @@ class Nina(QWidget):
         else:
             acct_menu.addAction(_("No accounts in {path}", path=config.short_path(str(config.ACCOUNTS_ROOT)))).setEnabled(False)
 
+        menu.addAction(_("Connections and agents...")).triggered.connect(self.open_connections)
+
         link = QAction(_("Connect to Claude Code"), menu, checkable=True, checked=claude_hooks.hooks_installed())
         link.setToolTip(_("Installs the hooks that make NINA react to what Claude Code is doing"))
         link.triggered.connect(self.toggle_hooks)
@@ -604,13 +606,45 @@ class Nina(QWidget):
         except Exception as e:
             print(f"NINA: could not record an agent event: {e}", file=sys.stderr)
 
+    def prune_sessions(self) -> None:
+        """Conversations NINA keeps for agents on other AIs: drop those nobody refers to any more (no open chat, no
+        history entry, no managed agent) after `history_keep_days` days, or 90 when the history is kept forever."""
+        from nina.agents import managed_store, sessions
+        days = self.cfg.get("history_keep_days", 0)
+        days = days if isinstance(days, int) and days > 0 else 90
+        keep = {m.get("session") for m in chat.chathistory.list_meta()} if chat is not None else set()
+        keep |= {a.get("session") for a in managed_store.load()}
+        if chat is not None:
+            for t in chat.load_tabs().get("tabs", []):
+                keep.add(chat.load_saved(chat.tab_state_path(t["id"])).get("session"))
+        sessions.prune(days, {k for k in keep if k})
+
+    def open_connections(self) -> None:
+        """The AIs NINA can use and which one each role runs on."""
+        from nina.agents import roles as roles_mod
+        from nina.connections_view import ConnectionsDialog
+        dialog = ConnectionsDialog(self.cfg, config.list_accounts(), self.save_connections,
+                                   roles=roles_mod.load_roles(config.roles_dir()))
+        dialog.exec()
+
+    def save_connections(self, new: dict) -> None:
+        for key in ("connections", "default_connection", "role_connections"):
+            self.cfg[key] = new.get(key, self.cfg.get(key))
+        config.save_config(self.cfg)
+        if self.chat_box is not None:
+            self.chat_box.update_account_button()
+
     def managed_available(self) -> bool:
-        return managed_view is not None and managed is not None and managed.available()
+        """Agents and the chat need either the Claude Agent SDK or a connection to another AI."""
+        if managed_view is None or managed is None:
+            return False
+        return managed.available() or bool(connections.custom_connections(self.cfg))
 
     def managed_context(self) -> dict:
         return {"accounts": config.list_accounts(), "account": self.cfg.get("account", ""),
                 "accounts_root": config.ACCOUNTS_ROOT, "default_dir": config.default_dir_of(self.cfg),
-                "roles_dir": config.roles_dir(), "claude_bin": self.cfg.get("claude_bin", "")}
+                "roles_dir": config.roles_dir(), "claude_bin": self.cfg.get("claude_bin", ""),
+                "cfg": self.cfg, "sdk": managed is not None and managed.available()}
 
     def make_managed_tab(self):
         if not self.managed_available():
@@ -621,6 +655,7 @@ class Nina(QWidget):
             print(f"NINA: managed agents unavailable: {e}", file=sys.stderr)
             return None
         tab.attention.connect(lambda text: self.say(text, 4))
+        tab.hook_event.connect(self.record_agent_event)
         QApplication.instance().aboutToQuit.connect(tab.shutdown)
         return tab
 
@@ -629,15 +664,18 @@ class Nina(QWidget):
         if self.chat_box is not None:
             return True
         if not self.managed_available():
-            QMessageBox.information(self, APP_NAME, _("Talking to NINA needs managed agents: install the 'agents' extra."))
+            QMessageBox.information(self, APP_NAME, _("Talking to NINA needs managed agents (the 'agents' extra) or a "
+                                                      "connection to another AI (right click → Connections and agents...)."))
             return False
         saved = chat.load_tabs()
         days = self.cfg.get("history_keep_days", 0)
         if isinstance(days, int) and days > 0:        # optional: forget conversations unused for this many days
             chat.chathistory.prune(days, keep={t.get("conv") for t in saved.get("tabs", [])})
+        self.prune_sessions()
         first = saved["tabs"][0]["id"] if saved else "main"
         self.chat_box = chat.ChatBox(self.make_chat_controller(first), self.cfg.get("chat_theme", "dark"),
-                                     self.save_chat_theme, factory=self.make_chat_controller, saved=saved)
+                                     self.save_chat_theme, factory=self.make_chat_controller, saved=saved,
+                                     on_connections=self.open_connections)
         return True
 
     @property
@@ -649,6 +687,7 @@ class Nina(QWidget):
         ctrl = chat.ChatController(lambda: {**self.managed_context(), "chat_role": self.cfg.get("chat_role", "")},
                                    path=chat.tab_state_path(tab_id), parent=self, tab_id=tab_id, auto=self.auto_mode())
         ctrl.attention.connect(lambda text: self.say(text, 4))
+        ctrl.hook_event.connect(self.record_agent_event)
         ctrl.state_changed.connect(lambda state, c=ctrl: self.on_chat_state(c, state))
         ctrl.message.connect(lambda *_a, c=ctrl: self.on_chat_activity(c))
         ctrl.finished.connect(self.celebrate)
