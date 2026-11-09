@@ -345,4 +345,8 @@ CATALOG = {
     "Coordinator: NINA delegates": "Coordenadora: a NINA delega",
     "Collaborative: agents delegate too": "Colaborativo: os agentes também delegam",
     "Agent of this chat": "Agente desta conversa",
+    "Ask before each delegation": "Perguntar antes de cada delegação",
+    "Mode:": "Modo:",
+    "Levels of delegation:": "Níveis de delegação:",
+    "Delegations per message:": "Delegações por mensagem:",
 }

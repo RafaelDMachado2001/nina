@@ -11,12 +11,14 @@ import threading
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from nina import connections, secrets
+from nina import connections, orchestration, secrets
 from nina.agents import openai_client
 from nina.i18n import _
 
@@ -244,6 +246,7 @@ class ConnectionsDialog(QDialog):
         self.setWindowTitle(_("Connections and agents"))
         self.setMinimumSize(640, 460)
         self.cfg = {k: copy.deepcopy(cfg.get(k)) for k in ("connections", "default_connection", "role_connections")}
+        self.cfg["orchestration"] = orchestration.settings(cfg)
         self.cfg["connections"] = list(self.cfg["connections"] or [])
         self.cfg["default_connection"] = self.cfg["default_connection"] or ""
         self.cfg["role_connections"] = dict(self.cfg["role_connections"] or {})
@@ -431,9 +434,32 @@ class ConnectionsDialog(QDialog):
         scroll.setWidget(inner)
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.addWidget(self.build_orchestration_box())
         layout.addWidget(scroll, 1)
         layout.addWidget(note)
         return page
+
+    def build_orchestration_box(self) -> QGroupBox:
+        st = self.cfg["orchestration"]
+        box = QGroupBox(_("Orchestration"))
+        self.orch_mode = QComboBox()
+        for key, label in (("manual", _("Manual: you pick the agent")), ("coordinator", _("Coordinator: NINA delegates")),
+                           ("collaborative", _("Collaborative: agents delegate too"))):
+            self.orch_mode.addItem(label, key)
+        self.orch_mode.setCurrentIndex(max(0, self.orch_mode.findData(st["mode"])))
+        self.orch_depth, self.orch_budget = QSpinBox(), QSpinBox()
+        self.orch_depth.setRange(1, 5)
+        self.orch_depth.setValue(st["max_depth"])
+        self.orch_budget.setRange(1, 50)
+        self.orch_budget.setValue(st["max_delegations"])
+        self.orch_ask = QCheckBox(_("Ask before each delegation"))
+        self.orch_ask.setChecked(st["ask"])
+        form = QFormLayout(box)
+        form.addRow(_("Mode:"), self.orch_mode)
+        form.addRow(_("Levels of delegation:"), self.orch_depth)
+        form.addRow(_("Delegations per message:"), self.orch_budget)
+        form.addRow("", self.orch_ask)
+        return box
 
     def refresh_agent_choices(self) -> None:
         entries = [(None, _("Default"))] + [(c["id"], c["name"]) for c in self.all()]
@@ -487,5 +513,8 @@ class ConnectionsDialog(QDialog):
             QMessageBox.warning(self, _("Connections and agents"),
                                 _("The key could not be stored: {error}", error=e))
             return
+        self.cfg["orchestration"] = {**self.cfg["orchestration"], "mode": self.orch_mode.currentData(),
+                                     "max_depth": self.orch_depth.value(), "max_delegations": self.orch_budget.value(),
+                                     "ask": self.orch_ask.isChecked()}
         self.save(copy.deepcopy(self.cfg))
         super().accept()

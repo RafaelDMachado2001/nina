@@ -635,7 +635,7 @@ class Nina(QWidget):
         config.save_config(self.cfg)
 
     def save_connections(self, new: dict) -> None:
-        for key in ("connections", "default_connection", "role_connections"):
+        for key in ("connections", "default_connection", "role_connections", "orchestration"):
             self.cfg[key] = new.get(key, self.cfg.get(key))
         config.save_config(self.cfg)
         if self.chat_box is not None:
