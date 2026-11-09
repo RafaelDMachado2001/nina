@@ -55,11 +55,15 @@ def _text_of(content) -> str:
 
 
 class OpenAIAgent:
-    def __init__(self, agent, connection: dict, model: str, gate, emit, max_steps: int = 40, hide_env=()):
+    def __init__(self, agent, connection: dict, model: str, gate, emit, max_steps: int = 40, hide_env=(),
+                 delegate=None, targets=(), extra_prompt: str = ""):
         self.agent, self.conn, self.model = agent, connection, model or connection.get("model", "")
         self.gate, self.emit, self.max_steps = gate, emit, max(1, int(max_steps or 40))
         self.bash = tools.find_bash()
         self.tools = tools.offered(agent.role, self.bash is not None)
+        self.delegate, self.extra_prompt = delegate, extra_prompt
+        if delegate is not None and targets:
+            self.tools.append(tools.delegate_spec(list(targets)))
         self.tool_names = {t["function"]["name"] for t in self.tools}
         self.messages = []
         self.turn = None
@@ -170,7 +174,7 @@ class OpenAIAgent:
         self.messages.append({"role": "user", "content": user_content(message)})
         self._hook("UserPromptSubmit", prompt=clip(_text_of(self.messages[-1]["content"]), 160))
         key = secrets.get_key(self.conn)
-        system = {"role": "system", "content": system_prompt(a.role, a.cwd, self.bash is not None)}
+        system = {"role": "system", "content": system_prompt(a.role, a.cwd, self.bash is not None) + self.extra_prompt}
         steps, last_text = 0, ""
         while True:
             self._trim()
@@ -217,9 +221,11 @@ class OpenAIAgent:
         self._hook("PreToolUse", tool=name, detail=_summary(args))
         if name not in self.tool_names:
             return {**result, "content": f"Error: the tool {name!r} is not available here"}
-        allowed, why = await self.gate.check(a.id, a.role, a.cwd, name, args, a.pending)
+        allowed, why = await self.gate.check(a.id, getattr(a, "gate_role", a.role), a.cwd, name, args, a.pending)
         if not allowed:
             return {**result, "content": f"Error: denied: {why}"}
+        if name == "Delegate":
+            return {**result, "content": await self.delegate(str(args.get("role", "")), str(args.get("task", "")))}
         return {**result, "content": await tools.run(name, args, a.cwd, self.bash, self.hide_env)}
 
     def _usage(self, usage: dict) -> None:

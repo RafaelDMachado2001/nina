@@ -146,6 +146,8 @@ def describe(tool: str, tool_input: dict, max_lines: int = 24) -> str:
                 f"+ {str(tool_input.get('new_string', ''))[:600]}")
     elif tool == "Bash":
         text = _("Run in the shell:") + f"\n\n{tool_input.get('command', '')}"
+    elif tool == "Delegate":
+        text = _("Hand this task to {role}:", role=tool_input.get("role", "")) + f"\n\n{tool_input.get('task', '')}"
     elif tool == "WebFetch":
         text = _("Fetch this web page:") + f"\n\n{tool_input.get('url', '')}"
     else:
@@ -165,6 +167,8 @@ class Gate:
 
     async def check(self, agent_id: str, role: dict, cwd: str, tool: str, tool_input: dict, pending: set) -> tuple:
         """(allowed, message). `pending` is the agent's own set of open request ids (so closing it can deny them)."""
+        if tool == "mcp__nina__delegate":        # Claude agents call NINA's Delegate through an SDK MCP server
+            tool = "Delegate"
         verdict, why = decide(tool, tool_input, role, cwd, self.deny_getter() or ())
         if verdict == "allow":
             return True, ""

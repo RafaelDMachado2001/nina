@@ -56,6 +56,14 @@ SPECS = {
 }
 
 
+def delegate_spec(targets: list) -> dict:
+    """The Delegate tool, limited to the roles this agent may hand work to."""
+    return _fn("Delegate", "Hand a self-contained task to another agent (a role) and get its answer back.",
+               {"role": {"type": "string", "enum": list(targets), "description": "Which role does the task"},
+                "task": {"type": "string", "description": "Everything the other agent needs: it does not see this conversation"}},
+               ["role", "task"])
+
+
 def offered(role: dict, has_bash: bool) -> list:
     """The tools this role gets: never Write/Edit for a read-only role, no Bash without a shell."""
     names = ["Read", "Glob", "Grep", "WebFetch"]
