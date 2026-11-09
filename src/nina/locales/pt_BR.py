@@ -335,4 +335,6 @@ CATALOG = {
     "{n} models.": "{n} modelos.",
     "Claude is not installed here (the 'agents' extra); using {name}.": "O Claude não está instalado aqui (o extra 'agents'); usando {name}.",
     "A new conversation starts.": "Uma nova conversa começa.",
+    "NINA (coordinator)": "NINA (coordenadora)",
+    "Splits your request and hands each part to the right agent (needs the Coordinator or Collaborative mode).": "Divide o seu pedido e entrega cada parte ao agente certo (precisa do modo Coordenadora ou Colaborativo).",
 }
