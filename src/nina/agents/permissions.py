@@ -5,14 +5,22 @@ pre-approved; writes outside the role's paths are denied without asking) -> auto
 user (Allow / Deny), 10 minutes at most.
 
 Rules use Claude Code's syntax: `Tool`, `Tool(exact)` or `Tool(prefix:*)`. For Bash the parentheses match the
-command; for other tools they are a glob on the file path or URL.
+command; for other tools they are a glob on the file path (relative to the agent's folder, or absolute; `~` works) or
+the URL.
+
+Rules fail safe. A pre-approval (`allow`) of a Bash rule only covers a single plain command: anything chained (`;`,
+`&&`, `|`, a newline), substituted (`$(...)`, backticks) or redirected asks. A deny rule matches any part of a command,
+including what runs inside a substitution and after `sudo`. Paths are normalised (`..`, `./`, `~`, absolute or not)
+before they are compared.
 """
 import asyncio
 import fnmatch
 import os
 import re
+import shlex
 import uuid
 
+from nina.autoapprove import _split, _tokens
 from nina.agents.store import redact
 from nina.i18n import _
 
@@ -25,31 +33,94 @@ def target_path(tool_input: dict) -> str:
     return str(tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path") or "")
 
 
-def rule_matches(rule: str, tool: str, tool_input: dict) -> bool:
+WRAPPERS = {"sudo", "doas", "env", "nohup", "nice", "time", "command", "builtin", "exec"}
+
+
+def _command_parts(command: str, depth: int = 0) -> tuple:
+    """(token lists of every command in `command`, including substitutions, and whether it is one plain command)."""
+    segments, inner, flags = _split(command)
+    parts, plain = [], flags["ok"] and not flags["redirect"] and not flags["heredoc"] and not inner and len(segments) == 1
+    for segment in segments:
+        tokens = _tokens(segment)
+        if tokens is None:
+            plain = False
+            continue
+        while tokens and tokens[0] in WRAPPERS:
+            tokens = tokens[1:]
+            while tokens and tokens[0].startswith("-"):      # sudo -u x ...: drop the wrapper's options
+                tokens = tokens[1:]
+        parts.append(tokens)
+    if depth < 3:
+        for text in inner:
+            parts += _command_parts(text, depth + 1)[0]
+    return parts, plain and flags["ok"]
+
+
+def _bash_matches(spec: str, command: str, deny: bool) -> bool:
+    prefix_mode = spec.endswith(":*")
+    try:
+        wanted = shlex.split(spec[:-2] if prefix_mode else spec)
+    except ValueError:
+        return False
+    if not wanted:
+        return False
+    parts, plain = _command_parts(command)
+
+    def hit(tokens):
+        return tokens[:len(wanted)] == wanted if prefix_mode else tokens == wanted
+    if deny:
+        if any(hit(t) for t in parts):
+            return True
+        # unparseable text: be conservative and look for the words anywhere
+        return not plain and " ".join(wanted) in " ".join(command.split())
+    return plain and len(parts) == 1 and hit(parts[0])
+
+
+def _path_forms(raw: str, cwd: str) -> list:
+    """The absolute path and (inside the folder) the folder-relative path, both with "/" and `..` resolved."""
+    if not raw:
+        return []
+    expanded = os.path.expanduser(raw)
+    full = os.path.normpath(expanded if os.path.isabs(expanded) else os.path.join(cwd or os.getcwd(), expanded))
+    forms = [full.replace("\\", "/")]
+    if cwd:
+        base = os.path.normpath(cwd)
+        if full == base or full.startswith(base.rstrip(os.sep) + os.sep):
+            forms.append(os.path.relpath(full, base).replace("\\", "/"))
+    return forms
+
+
+def _glob_matches(pattern: str, forms: list) -> bool:
+    pattern = os.path.expanduser(pattern.strip()).replace("\\", "/")
+    patterns = [pattern] + ([pattern[3:]] if pattern.startswith("**/") else [])   # **/x also matches x at the top
+    return any(fnmatch.fnmatch(form, p) for form in forms for p in patterns)
+
+
+def rule_matches(rule: str, tool: str, tool_input: dict, cwd: str = "", deny: bool = False) -> bool:
+    """Whether a rule covers this call. `deny` rules match any part of a command; allow rules fail safe."""
     m = _RULE.match(str(rule or ""))
     if not m or m.group(1) != tool:
         return False
     spec = m.group(2)
     if spec is None:
         return True
-    subject = str(tool_input.get("command", "")) if tool == "Bash" else (target_path(tool_input) or str(tool_input.get("url", "")))
-    subject = subject.strip()
+    spec = spec.strip()
     if tool == "Bash":
-        if spec.endswith(":*"):
-            prefix = spec[:-2].strip()
-            return subject == prefix or subject.startswith(prefix + " ")
-        return subject == spec.strip()
-    return fnmatch.fnmatch(subject.replace("\\", "/"), spec.strip())
+        return _bash_matches(spec, str(tool_input.get("command", "")), deny)
+    path = target_path(tool_input)
+    if path:
+        return _glob_matches(spec, _path_forms(path, cwd))
+    url = str(tool_input.get("url", "")).strip()
+    return bool(url) and fnmatch.fnmatch(url, spec)
 
 
 def decide(tool: str, tool_input: dict, role: dict, cwd: str, deny=()) -> tuple:
     """('allow'|'deny'|'ask', reason). A write outside the role's paths is denied without even asking."""
     for rule in deny or ():
-        if rule_matches(rule, tool, tool_input):
+        if rule_matches(rule, tool, tool_input, cwd, deny=True):
             return "deny", _("Blocked by your NINA permissions: {rule}", rule=rule)
-    if any(rule_matches(r, tool, tool_input) for r in role.get("tools", [])):
-        return "allow", ""
-    if tool in WRITE_TOOLS:
+    preapproved = any(rule_matches(r, tool, tool_input, cwd) for r in role.get("tools", []))
+    if tool in WRITE_TOOLS:     # a pre-approval never lifts the folder and the role's paths
         raw = target_path(tool_input)
         if not raw:
             return "deny", _("Missing file path.")
@@ -61,7 +132,7 @@ def decide(tool: str, tool_input: dict, role: dict, cwd: str, deny=()) -> tuple:
         if not any(fnmatch.fnmatch(rel.replace(os.sep, "/"), pattern) for pattern in role.get("writes", [])):
             allowed = ", ".join(role.get("writes", [])) or _("none")
             return "deny", _("This role cannot write to {path} (allowed: {allowed}).", path=rel, allowed=allowed)
-    return "ask", ""
+    return ("allow", "") if preapproved else ("ask", "")
 
 
 def describe(tool: str, tool_input: dict, max_lines: int = 24) -> str:

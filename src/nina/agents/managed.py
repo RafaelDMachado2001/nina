@@ -203,8 +203,11 @@ class Runner:
             kwargs["model"] = agent.model or role["model"]
         if self.claude_bin:
             kwargs["cli_path"] = self.claude_bin
+        disallowed = list(self.deny)                           # NINA's deny list, also where can_use_tool is skipped
         if not role.get("writes"):
-            kwargs["disallowed_tools"] = sorted(WRITE_TOOLS)     # read-only role: it never even gets to ask
+            disallowed += sorted(WRITE_TOOLS)                  # read-only role: it never even gets to ask
+        if disallowed:
+            kwargs["disallowed_tools"] = disallowed
         return sdk.ClaudeAgentOptions(**kwargs)
 
     async def _launch(self, agent: _Agent, prompt: str) -> None:
