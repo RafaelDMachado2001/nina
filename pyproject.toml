@@ -25,6 +25,8 @@ dependencies = [
     # that Python 3.12+ is immune to because None is immortal), so it is excluded there.
     "PySide6>=6.6,<6.12; python_version < '3.12'",
     "PySide6>=6.6; python_version >= '3.12'",
+    # API keys of connections live in the system keyring (Windows Credential Manager, macOS Keychain, Secret Service)
+    "keyring>=24",
 ]
 
 [project.optional-dependencies]
