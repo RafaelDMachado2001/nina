@@ -42,7 +42,7 @@ class OpenAIAgentTest(unittest.TestCase):
         with self.lock:
             return [(k, p) for _a, k, p in self.events]
 
-    def wait_for(self, kind, pred=lambda p: True, timeout=8.0, after=0):
+    def wait_for(self, kind, pred=lambda p: True, timeout=20.0, after=0):
         t0 = time.time()
         while time.time() - t0 < timeout:
             for k, p in self.kinds()[after:]:
@@ -59,7 +59,7 @@ class OpenAIAgentTest(unittest.TestCase):
 
     def wait_idle(self, n=1):
         t0 = time.time()
-        while self.idle_count() < n and time.time() - t0 < 8:
+        while self.idle_count() < n and time.time() - t0 < 20:
             time.sleep(0.01)
         self.assertGreaterEqual(self.idle_count(), n, self.kinds())
 

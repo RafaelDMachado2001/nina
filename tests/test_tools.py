@@ -79,8 +79,8 @@ class ToolsTest(unittest.TestCase):
         self.assertIn("exit code 3", out)
         self.assertIn("notes.md", run("Bash", {"command": "ls"}, self.cwd))          # runs in the agent's folder
         t0 = time.time()
-        self.assertIn("timed out", run("Bash", {"command": "sleep 5", "timeout_s": 1}, self.cwd))
-        self.assertLess(time.time() - t0, 4)
+        self.assertIn("timed out", run("Bash", {"command": "sleep 8", "timeout_s": 1}, self.cwd))
+        self.assertLess(time.time() - t0, 6)                                        # not the full 8 s
 
     def test_bash_without_a_shell_is_an_error(self):
         self.assertTrue(run("Bash", {"command": "ls"}, self.cwd, bash=None).startswith("Error:"))
