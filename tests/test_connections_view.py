@@ -161,6 +161,17 @@ class ConnectionsDialogTest(IsolatedHome):
         row = d.binding_row("architect")
         self.assertEqual((row["connection"].currentData(), row["model"].text()), ("local", "big-model"))
 
+    def test_orchestration_settings_are_saved(self):
+        d = self.make(cfg={"connections": [LOCAL], "orchestration": {"mode": "manual", "allow": {"general": ["architect"]}}})
+        self.assertEqual(d.orch_mode.currentData(), "manual")
+        d.orch_mode.setCurrentIndex(d.orch_mode.findData("collaborative"))
+        d.orch_depth.setValue(3)
+        d.orch_budget.setValue(5)
+        d.orch_ask.setChecked(False)
+        d.accept()
+        self.assertEqual(self.saved[-1]["orchestration"], {"mode": "collaborative", "max_depth": 3, "max_delegations": 5,
+                                                           "ask": False, "allow": {"general": ["architect"]}})
+
     def test_test_button_reports_the_answer_or_the_error(self):
         d = self.make()
         self.assertIn("OK", d.test_text(d.connection_by_id("local")))

@@ -146,6 +146,8 @@ def describe(tool: str, tool_input: dict, max_lines: int = 24) -> str:
                 f"+ {str(tool_input.get('new_string', ''))[:600]}")
     elif tool == "Bash":
         text = _("Run in the shell:") + f"\n\n{tool_input.get('command', '')}"
+    elif tool == "Delegate":
+        text = _("Hand this task to {role}:", role=tool_input.get("role", "")) + f"\n\n{tool_input.get('task', '')}"
     elif tool == "WebFetch":
         text = _("Fetch this web page:") + f"\n\n{tool_input.get('url', '')}"
     else:
@@ -161,10 +163,13 @@ class Gate:
         self.loop, self.emit = loop, emit
         self.auto_getter, self.deny_getter = auto_getter, deny_getter
         self.pending = {}            # req_id -> Future[(allow, message, always)]
+        self.describer = None        # optional (agent_id, tool, tool_input) -> text | None, for richer questions
         self.remember = {}           # req_id -> the auto mode steps "Allow always" would save
 
     async def check(self, agent_id: str, role: dict, cwd: str, tool: str, tool_input: dict, pending: set) -> tuple:
         """(allowed, message). `pending` is the agent's own set of open request ids (so closing it can deny them)."""
+        if tool == "mcp__nina__delegate":        # Claude agents call NINA's Delegate through an SDK MCP server
+            tool = "Delegate"
         verdict, why = decide(tool, tool_input, role, cwd, self.deny_getter() or ())
         if verdict == "allow":
             return True, ""
@@ -184,7 +189,8 @@ class Gate:
         offer = steps if steps and not any(s.hard for s in steps) else []
         if offer:
             self.remember[req] = offer
-        self.emit(agent_id, "permission", {"req": req, "tool": tool, "detail": describe(tool, tool_input),
+        detail = (self.describer(agent_id, tool, tool_input) if self.describer else None) or describe(tool, tool_input)
+        self.emit(agent_id, "permission", {"req": req, "tool": tool, "detail": redact(detail)[:3000],
                                            "remember": [s.label for s in offer]})
         try:
             allow, message, always = await asyncio.wait_for(fut, PERMISSION_TIMEOUT_S)

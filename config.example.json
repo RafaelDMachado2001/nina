@@ -51,5 +51,17 @@
     "deny": [
       "Bash(rm -rf:*)"
     ]
+  },
+  "orchestration": {
+    "mode": "manual",
+    "max_depth": 2,
+    "max_delegations": 8,
+    "ask": true,
+    "allow": {
+      "general": [
+        "writing-reviewer",
+        "code-reviewer"
+      ]
+    }
   }
 }

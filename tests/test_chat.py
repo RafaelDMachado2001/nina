@@ -7,6 +7,8 @@ from nina import chat, chathistory
 
 
 class FakeRunner:
+    orchestration = None
+
     def __init__(self, emit, claude_bin):
         self.emit = emit
         self.started, self.sent, self.stopped, self.interrupted, self.resolved = [], [], [], [], []
@@ -132,6 +134,145 @@ class ChatControllerTest(IsolatedHome):
         self.runner_deny = None
         c.ask("hi")
         self.assertEqual((self.runner.deny, self.runner.max_steps), (["Bash(rm:*)"], 7))
+
+    # ---- orchestration ---------------------------------------------------------------------------------
+    def test_the_role_follows_the_mode_unless_one_is_picked(self):
+        c = self.make(cfg={"orchestration": {"mode": "coordinator"}})
+        self.assertEqual(c.role_for_chat()["id"], "coordinator")
+        self.assertTrue(c.set_role("architect"))
+        self.assertEqual(c.role_for_chat()["id"], "architect")
+        c.set_role(None)
+        self.ctx["cfg"] = {}
+        self.assertEqual(c.role_for_chat()["id"], "general")
+
+    def test_role_entries_show_the_coordinator_only_when_it_can_work(self):
+        ids = [r for r, _label in self.make().role_entries()]
+        self.assertEqual(ids[0], None)
+        self.assertIn("general", ids)
+        self.assertNotIn("coordinator", ids)
+        ids = [r for r, _label in self.make(cfg={"orchestration": {"mode": "collaborative"}}).role_entries()]
+        self.assertIn("coordinator", ids)
+
+    def test_switching_the_mode_starts_a_new_conversation_with_a_note(self):
+        c = self.make()
+        chat.save_saved({"session": "s1", "connection": "claude", "role": "general"}, self.state)
+        self.ctx["cfg"] = {"orchestration": {"mode": "coordinator"}}
+        c.ask("hi")
+        self.assertIsNone(self.runner.started[-1]["resume"])
+        self.assertEqual(self.runner.started[-1]["role"], "coordinator")
+        self.assertTrue(any(k == "info" and "NINA (coordinator)" in t for k, t in self.messages))
+
+    def test_a_session_of_the_same_role_resumes(self):
+        c = self.make()
+        chat.save_saved({"session": "s1", "connection": "claude", "role": "general"}, self.state)
+        c.ask("hi")
+        self.assertEqual(self.runner.started[-1]["resume"], "s1")
+        c2 = self.make()
+        chat.save_saved({"session": "s2", "connection": "claude"}, self.state)    # saved before roles were kept
+        c2.ask("hi")
+        self.assertEqual(self.runner.started[-1]["resume"], "s2")
+
+    def test_the_runner_gets_orchestration_and_children_use_the_chat_ai(self):
+        c = self.make(cfg={"connections": [self.LOCAL], "orchestration": {"mode": "coordinator"},
+                           "role_connections": {"architect": "local"}})
+        c.set_connection("claude")
+        c.ask("hi")
+        orch = self.runner.orchestration
+        self.assertEqual(orch["settings"]["mode"], "coordinator")
+        roles = orch["roles"]
+        parent = {"id": "claude", "kind": "claude", "name": "Claude", "account": ""}
+        conn, model, account, config_dir = orch["resolve"](roles["architect"], parent)
+        self.assertEqual((conn["id"], model), ("local", "qwen"))                    # its own binding
+        conn, _m, _a, _d = orch["resolve"](roles["writing-reviewer"], parent)
+        self.assertEqual(conn["id"], "claude")                                        # no binding: the chat's AI
+        self.assertEqual(orch["conn_name"]("architect"), "Local AI")
+
+    # ---- final review (orchestration) --------------------------------------------------------------------
+    def test_a_live_agent_is_restarted_when_the_mode_changes(self):
+        self.ctx_cfg = {"orchestration": {"mode": "collaborative", "ask": False}}
+        c = self.make(cfg=self.ctx_cfg)
+        c.ask("one")
+        c.on_event("agent-1", "session", "sess-1")
+        c.on_event("agent-1", "status", "idle")
+        self.ctx["cfg"] = {"orchestration": {"mode": "manual"}}               # the user picks Manual
+        c.ask("two")
+        self.assertIn("agent-1", self.runner.stopped)
+        self.assertEqual(self.runner.sent, [])
+        self.assertEqual(self.runner.started[-1]["resume"], "sess-1")         # same role: the conversation goes on
+        self.assertEqual(self.runner.orchestration["settings"]["mode"], "manual")
+
+    def test_a_live_agent_of_the_old_default_role_gives_way_to_the_new_one(self):
+        c = self.make()
+        c.ask("one")
+        c.on_event("agent-1", "session", "sess-1")
+        c.on_event("agent-1", "status", "idle")
+        self.ctx["cfg"] = {"orchestration": {"mode": "coordinator"}}
+        c.ask("two")
+        self.assertEqual((self.runner.started[-1]["role"], self.runner.started[-1]["resume"]), ("coordinator", None))
+        self.assertTrue(any(k == "info" and "NINA (coordinator)" in t for k, t in self.messages))
+
+    def test_an_unchanged_live_agent_just_gets_the_message(self):
+        c = self.make(cfg={"orchestration": {"mode": "collaborative"}})
+        c.ask("one")
+        c.on_event("agent-1", "status", "idle")
+        c.ask("two")
+        self.assertEqual(self.runner.sent, [("agent-1", "two")])
+
+    def test_a_session_saved_before_roles_counts_as_the_general_role(self):
+        c = self.make(cfg={"orchestration": {"mode": "coordinator"}})
+        chat.save_saved({"session": "old", "connection": "claude"}, self.state)
+        c.ask("hi")
+        self.assertIsNone(self.runner.started[-1]["resume"])
+
+    def test_the_coordinator_picked_in_a_tab_is_not_used_in_manual_mode(self):
+        c = self.make(cfg={"orchestration": {"mode": "coordinator"}})
+        c.set_role("coordinator")
+        self.ctx["cfg"] = {}
+        self.assertEqual(c.role_for_chat()["id"], "general")
+
+    def test_an_interrupted_answer_is_not_reported_as_an_error(self):
+        c = self.make()
+        c.ask("hi")
+        c.on_event("agent-1", "status", "working")
+        c.interrupt()
+        c.on_event("agent-1", "result", {"cost": 0.01, "error": True,
+                                         "errors": ["[ede_diagnostic] result_type=user stop_reason=tool_use"]})
+        c.on_event("agent-1", "status", "idle")
+        self.assertFalse([t for k, t in self.messages if k == "error"])
+        self.assertIn(("info", "Interrupted."), self.messages)
+        c.ask("again")                                    # a later failure is still shown
+        c.on_event("agent-1", "result", {"cost": 0.02, "error": True, "errors": ["real failure"]})
+        self.assertIn(("error", "real failure"), self.messages)
+
+    def test_an_interrupted_answer_of_another_ai_is_not_an_error_either(self):
+        c = self.make()
+        c.ask("hi")
+        c.on_event("agent-1", "status", "working")
+        c.interrupt()
+        c.on_event("agent-1", "turn_error", "Interrupted.")
+        self.assertFalse([t for k, t in self.messages if k == "error"])
+        self.assertEqual(c.status, "idle")
+
+    def test_delegated_cost_counts_in_the_chat_and_the_day(self):
+        c = self.make()
+        c.ask("hi")
+        before = chat.chatinfo.load_day()["cost"]
+        c.on_event("agent-1", "extra_cost", 0.25)
+        self.assertAlmostEqual(c.info["cost"], 0.25)
+        self.assertAlmostEqual(chat.chatinfo.load_day()["cost"] - before, 0.25)
+
+    def test_withdrawn_permission_requests_leave_the_screen(self):
+        c = self.make()
+        cleared = []
+        c.permission_cleared.connect(lambda: cleared.append(1))
+        c.ask("hi")
+        c.on_event("agent-1", "permission", {"req": "r1", "tool": "X · Write", "detail": "d", "remember": []})
+        c.on_event("agent-1", "permission", {"req": "r2", "tool": "Y", "detail": "d", "remember": []})
+        c.on_event("agent-1", "permission_withdrawn", {"req": "r1"})
+        self.assertEqual(c.current_req["req"], "r2")
+        c.on_event("agent-1", "permission_withdrawn", {"req": "r2"})
+        self.assertIsNone(c.current_req)
+        self.assertTrue(cleared)
 
     def test_first_message_starts_the_general_role_in_the_default_folder(self):
         c = self.make()
@@ -486,6 +627,18 @@ class ChatBoxTest(IsolatedHome):
         self.addCleanup(again.close)
         self.assertEqual([again.tabbar.tabText(i) for i in range(2)], ["first topic", "second topic"])
         self.assertEqual(again.controller.tab_id, second_id)
+
+    def test_role_chip_and_orchestration_menu(self):
+        c1, box = self.make()
+        modes = []
+        box.on_orchestration = modes.append
+        self.assertEqual(box.role_btn.text(), "General assistant")
+        c1.set_role("architect")
+        self.assertEqual(box.role_btn.text(), "Architect")
+        saved = chat.load_tabs(self.home / "chats.json")
+        self.assertEqual(saved["tabs"][0]["role"], "architect")
+        box.set_orchestration("coordinator")
+        self.assertEqual(modes, ["coordinator"])
 
     def test_account_chip_shows_and_changes_the_chat_account(self):
         c1, box = self.make()

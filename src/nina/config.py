@@ -31,6 +31,8 @@ DEFAULTS = {
     "role_connections": {},     # role id -> connection id, or {"connection": id, "model": name}
     "permissions": {"deny": []},  # rules every agent obeys first, e.g. "Bash(rm -rf:*)", "WebFetch"
     "max_tool_steps": 40,       # tool calls per answer for agents on OpenAI-compatible connections
+    # Agents that delegate to agents: mode manual (default) | coordinator | collaborative. See nina.orchestration.
+    "orchestration": {"mode": "manual", "max_depth": 2, "max_delegations": 8, "ask": True, "allow": {}},
 }
 
 

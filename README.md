@@ -193,6 +193,23 @@ Good to know:
   switches to another AI by itself.
 - From a terminal: `nina --connections` lists them (never the keys) and `nina --test-connection <id>` tests one.
 
+### Orchestration: agents that delegate
+
+How NINA uses your agents is your choice (chat menu ⋮ → **Orchestration**, or **Connections and agents...** → Agents):
+
+- **Manual** (default): you pick the agent of each chat with the role chip in the chat's header. Agents never delegate.
+- **Coordinator**: new chats talk to **NINA (coordinator)**. She splits your request ("review the text of this article,
+  then fix the contact form bug"), hands each part to the right role (on that role's AI), and gives you one answer that
+  says who did what.
+- **Collaborative**: like Coordinator, and every agent may also hand work to other roles.
+
+Delegation is one more action under the same rules: by default it asks **Allow / Deny** first (role, AI and task);
+every action of the delegated agent asks like any other, labelled with that agent ("Writing reviewer · Gemini → Edit");
+a delegated role without its own AI runs on the AI of the agent that delegated; and limits keep it bounded: **levels of
+delegation** (default 2) and **delegations per message** (default 8, shared by everything one message sets off).
+Delegated agents appear as sub-agents in the agents panel and graph. An agent that may delegate through NINA does not use
+Claude's own subagents, so every split goes through these limits.
+
 ### Accounts and profiles
 
 NINA understands the common multi-account layout (one Claude config directory per account in `~/.claude/accounts/<account>`) and sets
@@ -235,6 +252,7 @@ A broken plugin never takes NINA down. Plugins run as you, so only put code you 
 | `role_connections` | Role id → connection id, or `{"connection": id, "model": name}` |
 | `permissions` | `{"deny": [rules]}`: actions blocked for every agent, e.g. `"Bash(rm -rf:*)"` |
 | `max_tool_steps` | Tool calls per answer for agents on other AIs (default 40) |
+| `orchestration` | `{"mode": "manual"\|"coordinator"\|"collaborative", "max_depth": 2, "max_delegations": 8, "ask": true, "allow": {role: [roles]}}` |
 
 Start with the system: right click → **Start with the system** (a freedesktop autostart entry).
 
